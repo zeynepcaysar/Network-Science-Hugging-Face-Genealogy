@@ -1,0 +1,31 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test and coverage output
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local tooling and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Data: too large for GitHub (models.jsonl alone is ~430 MB). See data/README.md.
+data/*
+!data/README.md
+
+# Temporary folders
+_tmp_claude/

@@ -1,0 +1,9 @@
+base_model,finetune,adapter,quantized,merge,total
+meta-llama/Llama-3.1-8B,1504,1359,344,71,3278
+meta-llama/Llama-3.1-8B-Instruct,3305,3037,957,105,7404
+mistralai/Mistral-7B-v0.1,951,2468,195,390,4004
+mistralai/Mistral-7B-Instruct-v0.2,1156,1212,112,353,2833
+Qwen/Qwen2.5-7B,991,877,87,137,2092
+Qwen/Qwen2.5-7B-Instruct,3252,2899,446,170,6767
+google/gemma-2-9b,331,68,55,5,459
+google/gemma-2-9b-it,522,492,182,20,1216

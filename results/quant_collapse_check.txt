@@ -1,0 +1,17 @@
+PASS  only quantised copies are removed
+PASS  all copies removed
+PASS  children of copies re-attached to their source
+PASS  no edge points to a removed copy
+PASS  no self-loops
+PASS  still a DAG
+PASS  every non-copy model keeps its family
+
+quantised models: 198,597
+merged into their source (single parent): 198,123
+kept (quantised from 2+ parents): 474
+quantised models with children of their own: 3,154 (1.6%)  [Horwitz et al. 2025: 0.6%]
+models left without edges (all their children were copies): 24,124
+nodes: 969,594 -> 771,471
+edges: 956,540 -> 758,327
+
+ALL CHECKS PASSED

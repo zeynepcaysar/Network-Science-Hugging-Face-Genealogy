@@ -1,0 +1,6 @@
+hub,children,adapter_share,accounts,top5_share
+google/gemma-7b,9588,0.959,277,0.666
+google/gemma-2b,24036,0.986,619,0.42
+Qwen/Qwen1.5-0.5B,32534,0.998,448,0.414
+Qwen/Qwen1.5-1.8B,30628,0.998,408,0.419
+Qwen/Qwen1.5-7B,6367,0.993,290,0.577

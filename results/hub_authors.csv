@@ -1,0 +1,8 @@
+hub,children,distinct_authors,top1_share,top5_share,zero_download_share,first_child,last_child,rel_mix,top_authors
+Qwen/Qwen1.5-0.5B,32534,448,0.097,0.414,0.001,2024-02-02,2026-07-15,adapter 32473; finetune 32; quantized 27; merge 2,xueyj (3165); Krabat (3023); rejjiex (2498); SALUTEASD (2406); dogssss (2368)
+Qwen/Qwen1.5-1.8B,30628,408,0.099,0.419,0.0,2024-02-03,2026-10-27,adapter 30581; finetune 32; quantized 13; merge 2,Krabat (3024); xueyj (2998); dogssss (2365); SALUTEASD (2360); downtown1 (2101)
+google/gemma-2b,24036,619,0.123,0.42,0.008,2024-02-21,2026-10-29,adapter 23700; finetune 293; quantized 35; merge 8,Krabat (2961); xueyj (2707); SALUTEASD (1932); tronsdds (1365); dllmchh (1125)
+Qwen/Qwen3-4B-Instruct-2507,9036,2162,0.029,0.092,0.2,2025-08-06,2026-11-05,adapter 5903; finetune 2730; quantized 365; merge 35; unknown 3,HYU-NLP-EVAL (263); mohtani777 (175); huluhuluu (144); anthughes (140); GMorgulis (110)
+google/gemma-7b,9588,277,0.218,0.666,0.005,2024-02-13,2026-10-29,adapter 9196; finetune 368; quantized 22; merge 1; unknown 1,Krabat (2088); tronsdds (1553); xueyj (1158); smeby (814); linger2334 (769)
+meta-llama/Llama-3.1-8B-Instruct,7401,2306,0.054,0.151,0.211,2024-07-23,2026-11-04,finetune 3299; adapter 3037; quantized 957; merge 105; unknown 3,xummer (397); FabioTrindade (204); r-three (185); dementor-research (183); Jongbin-kr (150)
+mistralai/Mistral-7B-v0.1,4049,1350,0.23,0.333,0.076,2023-09-27,2026-11-04,adapter 2468; finetune 950; merge 390; quantized 195; unknown 46,morturr (932); lejelly (242); thrunlab (65); LoneStriker (64); MaziyarPanahi (47)
