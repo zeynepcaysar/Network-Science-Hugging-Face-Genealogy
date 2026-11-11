@@ -49,8 +49,8 @@ Counts of every step are in `results/cleaning.txt`.
 
 ## Edge check
 
-`edge_check.py sample` draws 202 edges (50 per family, every edge type) and splits them
-between three people. Each person checks their rows on the model pages and fills in
+`edge_check.py sample` draws 202 edges (50 per family, every edge type) for one person
+to check. They check each row on the model pages and fill in
 `parent_ok`, `type_ok` and `notes`; `edge_check.py score` then gives error rates with 95%
 confidence intervals. `results/edge_check_auto.csv` is an automatic pre-check of the same
 edges against the model files: rows that are not a clear `y` still need a human check.

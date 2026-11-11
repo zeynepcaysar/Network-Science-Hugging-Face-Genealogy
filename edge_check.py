@@ -3,7 +3,7 @@
 Step 1 - draw the sample (once):
     python3 edge_check.py sample
   Writes results/edge_check_sample.csv: 200 edges, 50 per family, spread over the edge
-  types, plus a "checker" column that splits the rows between the three team members.
+  types, plus a "checker" column (one person by default; add names to CHECKERS to split).
 
 Step 2 - check by hand: open the child_url of each row. On the model page, look at the
   "Model tree" box on the right and the base_model line in the model card. Fill in:
@@ -22,7 +22,7 @@ import pandas as pd
 
 SAMPLE = "results/edge_check_sample.csv"
 PER_FAMILY, SEED = 50, 2026
-CHECKERS = ["Person 1", "Person 2", "Person 3"]
+CHECKERS = ["Person 1"]          # one person checks all rows
 
 
 def sample():
@@ -44,7 +44,7 @@ def sample():
     s = pd.concat(rows).sample(frac=1, random_state=SEED).reset_index(drop=True)
     s["child_url"] = "https://huggingface.co/" + s.child
     s["parent_url"] = "https://huggingface.co/" + s.parent
-    s["checker"] = [CHECKERS[i % 3] for i in range(len(s))]
+    s["checker"] = [CHECKERS[i % len(CHECKERS)] for i in range(len(s))]
     s["parent_ok"] = s["type_ok"] = s["notes"] = ""
     s[["checker", "family", "rel", "parent", "child", "child_url", "parent_url",
        "parent_ok", "type_ok", "notes"]].to_csv(SAMPLE, index=False)
