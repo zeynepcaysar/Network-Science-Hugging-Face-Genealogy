@@ -2,4 +2,6 @@ huggingface_hub
 networkx
 pandas
 numpy
+scipy
 matplotlib
+powerlaw

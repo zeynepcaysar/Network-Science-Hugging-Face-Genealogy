@@ -1,16 +1,19 @@
 """Who made the children of the biggest hubs? Flags likely bot / mass-upload accounts.
-Run:  python3 hub_authors.py            (needs data/edges.csv from analyse.py)
-Writes: results/hub_authors.csv, results/top_authors_by_family.csv
+Run:  python3 checks/hub_authors.py      (needs data/edges.csv from analyse.py)
+Writes: results/data/hub_authors.csv, results/data/top_authors_by_family.csv
 """
-import json, collections
+import json, collections, os
+from pathlib import Path
 import pandas as pd
+
+os.chdir(Path(__file__).resolve().parent.parent)          # repo root, so relative paths work from anywhere
 
 HUBS = ["Qwen/Qwen1.5-0.5B", "Qwen/Qwen1.5-1.8B", "google/gemma-2b",
         "Qwen/Qwen3-4B-Instruct-2507", "google/gemma-7b",
         "meta-llama/Llama-3.1-8B-Instruct", "mistralai/Mistral-7B-v0.1"]
 
-edges = pd.read_csv("data/edges.csv")
-nodes = pd.read_csv("data/nodes.csv", usecols=["id", "families"])
+edges = pd.read_csv("data/edges.csv", dtype=str, keep_default_na=False)
+nodes = pd.read_csv("data/nodes.csv", dtype=str, keep_default_na=False, usecols=["id", "families"])
 meta = {}
 for line in open("data/models.jsonl"):
     r = json.loads(line)
@@ -37,15 +40,15 @@ for hub in HUBS:
     print(f"\n{hub}: {n:,} children, {len(authors):,} authors")
     for a, k in top:
         print(f"   {a:35s} {k:7,d}  ({k/n:.1%})")
-pd.DataFrame(rows).to_csv("results/hub_authors.csv", index=False)
+pd.DataFrame(rows).to_csv("results/data/hub_authors.csv", index=False)
 
 # accounts that upload the most models inside each family (bot candidates)
 out = []
 for fam in ["Llama", "Mistral", "Qwen", "Gemma"]:
-    ids = nodes[nodes.families.fillna("").str.contains(fam)].id
+    ids = nodes[nodes.families.str.contains(fam)].id
     c = collections.Counter(meta[i][0] for i in ids if i in meta)
     total = sum(c.values())
     for a, k in c.most_common(10):
         out.append(dict(family=fam, author=a, models=k, share=round(k / total, 3)))
-pd.DataFrame(out).to_csv("results/top_authors_by_family.csv", index=False)
-print("\nwrote results/hub_authors.csv and results/top_authors_by_family.csv")
+pd.DataFrame(out).to_csv("results/data/top_authors_by_family.csv", index=False)
+print("\nwrote results/data/hub_authors.csv and results/data/top_authors_by_family.csv")

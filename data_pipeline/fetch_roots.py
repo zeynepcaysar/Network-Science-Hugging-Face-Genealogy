@@ -2,14 +2,17 @@
 The most important ones are the family roots (e.g. mistralai/Mistral-7B-v0.1): without
 their creation date the "child older than parent" check and the growth analysis fail.
 
-Run:  python3 fetch_roots.py                 # all models of the four orgs, ~1 min
-      python3 fetch_roots.py --all-missing   # also every other parent missing from the
+Run:  python3 data_pipeline/fetch_roots.py                 # all models of the four orgs, ~1 min
+      python3 data_pipeline/fetch_roots.py --all-missing   # also every other parent missing from the
                                              # snapshot (~46k calls, several hours; optional)
 Writes: data/roots.jsonl (same format as data/models.jsonl). analyse.py reads it automatically.
 """
-import argparse, json, re, time
+import argparse, json, os, re, time
+from pathlib import Path
 from huggingface_hub import HfApi
 from huggingface_hub.utils import HfHubHTTPError
+
+os.chdir(Path(__file__).resolve().parent.parent)          # repo root, so relative paths work from anywhere
 
 ORGS = ["meta-llama", "mistralai", "Qwen", "google"]
 FIELDS = ["createdAt", "downloads", "likes", "pipeline_tag", "tags", "author", "library_name"]

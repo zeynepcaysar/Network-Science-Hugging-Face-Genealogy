@@ -1,0 +1,19 @@
+declared tag vs files (auto_type):
+auto_type  adapter  finetune  merge  quantized
+rel                                           
+adapter         50         0      0          1
+finetune        19        21      2          1
+merge            0         2     32          4
+quantized        1         0      0         41
+unknown          0         0      1         25
+
+final type (after re-typing) vs files (auto_type):
+auto_type  adapter  finetune  merge  quantized
+rel_final                                     
+adapter         66         0      0          1
+finetune         3        21      0          1
+merge            0         2     35          4
+quantized        1         0      0         66
+
+rel        agrees with the files in 72.0% of 200 edges
+rel_final  agrees with the files in 94.0% of 200 edges

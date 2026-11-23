@@ -29,3 +29,7 @@ data/*
 
 # Temporary folders
 _tmp_claude/
+
+# pip install -e . metadata
+*.egg-info/
+build/

@@ -2,10 +2,13 @@
 those that declare a parent (base_model tag), plus every model of meta-llama, mistralai,
 Qwen and google so that root models get creation dates. One pass gives every edge with no
 per-model queries. Output: data/models.jsonl (one model per line).
-Run:  python3 snapshot.py            (or --max N to stop after N models, for a test)
+Run:  python3 data_pipeline/snapshot.py            (or --max N to stop after N models, for a test)
 """
 import argparse, json, os, re, time
+from pathlib import Path
 from huggingface_hub import HfApi
+
+os.chdir(Path(__file__).resolve().parent.parent)          # repo root, so relative paths work from anywhere
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--max", type=int, default=None, help="stop after N models (test run)")

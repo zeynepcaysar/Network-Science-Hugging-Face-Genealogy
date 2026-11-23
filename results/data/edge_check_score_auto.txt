@@ -24,4 +24,4 @@ wrong edge type: checked 172 of 202 (4 unclear)
 
 weighted to the real mix of families and edge types (use this as the overall rate):
   wrong parent       0.0%  (covers 100% of edges)
-  wrong edge type   15.9%  (covers 100% of edges)
+  wrong edge type   16.0%  (covers 100% of edges)

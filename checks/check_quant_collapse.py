@@ -1,6 +1,6 @@
 """Check that the quantisation-collapsed network is built correctly.
-Run:  python3 check_quant_collapse.py      (after analyse.py)
-Writes: results/quant_collapse_check.txt
+Run:  python3 checks/check_quant_collapse.py      (after analyse.py)
+Writes: results/data/quant_collapse_check.txt
 
 Tests (each prints PASS or FAIL):
   1. Only quantised copies disappear; every other node is kept.
@@ -10,19 +10,23 @@ Tests (each prints PASS or FAIL):
 Plus the numbers to report: how many copies were merged, and the share of quantised
 models that have children of their own (Horwitz et al. 2025 report 0.6%).
 """
-import collections
+import collections, os
+from pathlib import Path
 import networkx as nx
 import pandas as pd
 
-full = pd.read_csv("data/edges.csv")
-coll = pd.read_csv("data/edges_quant_collapsed.csv")
-nodes = pd.read_csv("data/nodes.csv", usecols=["id", "families"])
+os.chdir(Path(__file__).resolve().parent.parent)          # repo root, so relative paths work from anywhere
+
+full = pd.read_csv("data/edges.csv", dtype=str, keep_default_na=False)
+coll = pd.read_csv("data/edges_quant_collapsed.csv", dtype=str, keep_default_na=False)
+nodes = pd.read_csv("data/nodes.csv", dtype=str, keep_default_na=False, usecols=["id", "families", "alias_only"])
+nodes = nodes[nodes.alias_only != "True"]          # alias targets are not part of the main network
 G = nx.from_pandas_edgelist(full, "parent", "child", "rel", create_using=nx.DiGraph)
 H = nx.from_pandas_edgelist(coll, "parent", "child", "rel", create_using=nx.DiGraph)
 G.add_nodes_from(nodes.id)
 
 # the copies analyse.py merges: quantised children with exactly one parent
-q = {c for p, c, r in full.itertuples(index=False) if r == "quantized" and G.in_degree(c) == 1}
+q = {c for p, c, r in full[["parent", "child", "rel"]].itertuples(index=False) if r == "quantized" and G.in_degree(c) == 1}
 def source(n):
     while n in q:
         n = next(iter(G.predecessors(n)))
@@ -56,7 +60,7 @@ check("no self-loops", nx.number_of_selfloops(H) == 0)
 check("still a DAG", nx.is_directed_acyclic_graph(H))
 
 # 4. families kept (a node's family = the set of family roots it descends from; roots are never copies)
-fam = dict(zip(nodes.id, nodes.families.fillna("")))
+fam = dict(zip(nodes.id, nodes.families))
 roots = [n for n in G if G.in_degree(n) == 0 and fam.get(n)]
 reach = collections.defaultdict(set)
 for r in roots:
@@ -80,5 +84,5 @@ out += ["",
         f"nodes: {G.number_of_nodes():,} -> {G.number_of_nodes() - len(q):,}",
         f"edges: {G.number_of_edges():,} -> {H.number_of_edges():,}",
         "", "ALL CHECKS PASSED" if ok_all else "SOME CHECKS FAILED"]
-open("results/quant_collapse_check.txt", "w").write("\n".join(out) + "\n")
+open("results/data/quant_collapse_check.txt", "w").write("\n".join(out) + "\n")
 print("\n".join(out))

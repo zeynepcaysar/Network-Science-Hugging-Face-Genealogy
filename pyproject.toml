@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hf-genealogy"
+version = "1.0"
+description = "Shared loader for the Hugging Face model genealogy network"
+requires-python = ">=3.9"
+
+[tool.setuptools]
+py-modules = ["load"]

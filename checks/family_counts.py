@@ -1,8 +1,12 @@
 """Quick check (~2 min): direct children per edge type for the main base models.
-Run:  python3 family_counts.py      -> prints a table and writes results/family_counts.csv
+Run:  python3 checks/family_counts.py   -> prints a table and writes results/data/family_counts.csv
+Note: queries the live Hub, not the snapshot, so counts drift from the frozen data.
 """
 import csv, os
+from pathlib import Path
 from huggingface_hub import HfApi
+
+os.chdir(Path(__file__).resolve().parent.parent)          # repo root, so relative paths work from anywhere
 
 BASES = [
     "meta-llama/Llama-3.1-8B", "meta-llama/Llama-3.1-8B-Instruct",
@@ -22,8 +26,8 @@ for base in BASES:
     rows.append(row)
     print(f"{base:40s} " + "  ".join(f"{r}={row[r]}" for r in RELS + ["total"]), flush=True)
 
-os.makedirs("results", exist_ok=True)
-with open("results/family_counts.csv", "w", newline="") as f:
+os.makedirs("results/data", exist_ok=True)
+with open("results/data/family_counts.csv", "w", newline="") as f:
     w = csv.DictWriter(f, fieldnames=["base_model"] + RELS + ["total"])
     w.writeheader(); w.writerows(rows)
-print("wrote results/family_counts.csv")
+print("wrote results/data/family_counts.csv")
