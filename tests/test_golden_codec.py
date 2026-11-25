@@ -80,8 +80,10 @@ def test_first_difference_paths():
     expected = {"graph": {"nodes": [[0, {}], [1, {"created_at": ["Timestamp", "2024-02-01T00:00:00+00:00"]}]]}}
     assert diff(expected, golden_codec.normalize(expected)) is None
     actual = golden_codec.normalize(expected)
-    actual["graph"]["nodes"][1][1]["created_at"] = ["NaTType", None]
+    actual["graph"]["nodes"][1][1]["created_at"] = "2024-02-01"
     assert diff(expected, actual) == "graph.nodes[1][1].created_at"
+    actual["graph"]["nodes"][1][1]["created_at"] = ["NaTType", None]
+    assert diff(expected, actual) == "graph.nodes[1][1].created_at[0]"
     assert diff({"x": 1}, {"x": True}) == "x"
     assert diff({"x": []}, {"x": {}}) == "x"
     assert diff({"rows": [[1], [2]]}, {"rows": [[1]]}) == "rows[1]"
