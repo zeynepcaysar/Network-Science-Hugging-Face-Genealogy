@@ -14,9 +14,23 @@ families.
 
 ## Setup
 
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/); it supplies Python 3.13 on
+Windows, macOS and Linux (do not use the Microsoft Store Python). Then, in the repository folder
+(Git Bash on Windows):
+
 ```
-bash setup.sh                 # creates .venv, installs requirements.txt and load.py
-source .venv/bin/activate
+bash setup.sh                       # creates .venv with Python 3.13, installs the pinned packages and load.py
+source .venv/bin/activate           # macOS / Linux
+source .venv/Scripts/activate       # Git Bash on Windows
+.venv\Scripts\Activate.ps1          # PowerShell on Windows
+```
+
+`constraints.txt` pins every package; after a change to `requirements.txt`, regenerate it with the
+command in its header. With the environment active:
+
+```
+python -m pytest -m "not data and not slow"   # runs without the data files; use python -m pytest, not a bare pytest
+python load.py --verify                       # after copying the data: md5 check against MANIFEST.txt
 ```
 
 The data files are not stored on GitHub. The frozen dataset (v1) is in the team's shared

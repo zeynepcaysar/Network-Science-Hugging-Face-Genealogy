@@ -13,8 +13,28 @@ from the snapshot of 5 Nov 2026) is in the team's shared folder `data-v1`.
 | `edges_aliases.csv` | 13 KB | Undeclared re-uploads linked to the official model (sensitivity check) |
 | `MANIFEST.txt` | 1 KB | Build date, row counts and md5 checksums of all files |
 
-These files are read by `load.py`. Checksums can be verified with `md5 data/*.csv` (macOS) or
-`md5sum data/*.csv` (Linux) against `MANIFEST.txt`.
+These files are read by `load.py`.
+
+## Copying and checking the frozen files
+
+Copy `MANIFEST.txt` and the four CSVs (required) and `models.jsonl`, `files.jsonl`, `roots.jsonl`
+(optional, only needed to rebuild) from the shared `data-v1` folder into `data/`. Never overwrite a
+file that is already there without checking it first. Then run, with the venv activated:
+
+```
+python load.py --verify
+```
+
+It prints one `PASS`, `FAIL` or `note` line per entry of `MANIFEST.txt` (md5 of every file) and exits
+with 1 if any line is `FAIL`; a `note` means an optional file is absent. `verify_data("data-v1")`
+(from `load.py`) checks the shared folder itself. The check only reads files.
+
+If it reports `is a directory` for `data/models.jsonl`, the file was copied inside a folder of the
+same name: move the inner file up (`mv data/models.jsonl/models.jsonl data/models.jsonl.tmp`,
+`rmdir data/models.jsonl`, `mv data/models.jsonl.tmp data/models.jsonl`).
+
+`md5 data/*.csv` (macOS) or `md5sum data/*.csv` (Linux) against `MANIFEST.txt` remains a manual
+fallback.
 
 ## Inputs (for rebuilding)
 

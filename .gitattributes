@@ -1,0 +1,5 @@
+# Line endings: fixtures and golden files are compared byte for byte, so they stay LF on every OS.
+# data_pipeline/renames.csv is md5-checked against data/MANIFEST.txt and stored with CRLF: never convert it.
+tests/fixtures/** text eol=lf
+tests/golden/** text eol=lf
+data_pipeline/renames.csv -text
