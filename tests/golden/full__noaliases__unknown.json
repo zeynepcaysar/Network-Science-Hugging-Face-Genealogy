@@ -1,0 +1,66 @@
+{
+  "graph": {
+    "class": "DiGraph",
+    "directed": true,
+    "edges": [],
+    "graph": {},
+    "nodes": []
+  },
+  "meta": {
+    "combo": {
+      "aliases": false,
+      "families": ["Zzz"],
+      "version": "full"
+    },
+    "loader_blob": "1dc0e169ed8999b2b01cbc6aacb0e0be67eecb76",
+    "numpy": "2.5.5",
+    "pandas": "3.1.1",
+    "python": "3.13.18",
+    "ref": "41cda54de542f4da61afc548bd2d8951c3ebf4c8",
+    "ref_arg": "41cda54"
+  },
+  "tables": {
+    "edges": {
+      "columns": ["parent", "child", "rel", "rel_declared", "date"],
+      "dtypes": {
+        "child": "str",
+        "date": "str",
+        "parent": "str",
+        "rel": "str",
+        "rel_declared": "str"
+      },
+      "index": {
+        "start": 0,
+        "step": 1,
+        "stop": 0,
+        "type": "RangeIndex"
+      },
+      "rows": []
+    },
+    "nodes": {
+      "columns": ["id", "families", "generation", "created_at", "date_backfilled", "is_swarm", "is_quant_copy", "has_metadata", "in_deg", "out_deg", "author", "downloads", "likes"],
+      "dtypes": {
+        "author": "str",
+        "created_at": "datetime64[us, UTC]",
+        "date_backfilled": "bool",
+        "downloads": "Int64",
+        "families": "str",
+        "generation": "Int64",
+        "has_metadata": "bool",
+        "id": "str",
+        "in_deg": "Int64",
+        "is_quant_copy": "bool",
+        "is_swarm": "bool",
+        "likes": "Int64",
+        "out_deg": "Int64"
+      },
+      "index": {
+        "start": 0,
+        "step": 1,
+        "stop": 0,
+        "type": "RangeIndex"
+      },
+      "rows": []
+    }
+  }
+}

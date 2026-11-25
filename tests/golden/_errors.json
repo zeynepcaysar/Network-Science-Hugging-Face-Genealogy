@@ -1,0 +1,14 @@
+{
+  "aliases_quant_message": "aliases=True is only available for the full and no_swarm versions",
+  "bad_version_message": "version must be one of ('full', 'no_swarm', 'quant_collapsed')",
+  "meta": {
+    "combo": null,
+    "loader_blob": "1dc0e169ed8999b2b01cbc6aacb0e0be67eecb76",
+    "numpy": "2.5.5",
+    "pandas": "3.1.1",
+    "python": "3.13.18",
+    "ref": "41cda54de542f4da61afc548bd2d8951c3ebf4c8",
+    "ref_arg": "41cda54"
+  },
+  "versions": ["full", "no_swarm", "quant_collapsed"]
+}
