@@ -26,9 +26,13 @@ htmlcov/
 # Data: too large for GitHub (models.jsonl alone is ~430 MB). See data/README.md.
 data/*
 !data/README.md
+data-v1/
 
 # Temporary folders
 _tmp_claude/
+
+# pdf documentation
+*.pdf
 
 # pip install -e . metadata
 *.egg-info/
