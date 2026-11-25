@@ -5,3 +5,6 @@ numpy
 scipy
 matplotlib
 powerlaw
+pyarrow
+pytest
+hypothesis

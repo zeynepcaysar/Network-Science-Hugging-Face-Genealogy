@@ -1,0 +1,4 @@
+id,families,generation,generation_collapsed,created_at,date_backfilled,is_swarm,is_quant_copy,has_metadata,alias_only,in_deg,out_deg,families_alias,generation_alias,author,downloads,likes
+meta-llama/Llama-3.1-8B,Llama,0,0,2024-07-23T00:00:00+00:00,False,False,False,True,False,0,2,Llama,0,meta-llama,1000,100
+None,Llama,1,1,2024-08-01T00:00:00+00:00,False,False,False,True,False,1,0,Llama,1,,10,1
+NA,Llama,1,1,2024-08-02T00:00:00+00:00,False,False,False,True,False,1,0,Llama,1,,20,2
