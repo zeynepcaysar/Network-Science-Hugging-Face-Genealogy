@@ -156,9 +156,9 @@ def test_hit_at_window_start_raises():
 
 def test_hit_in_zero_exposure_cell_raises():
     from rq2lib import events, exposure
-    net = make_net([0, 5], [(0, 1)])
+    net = make_net([0, 4, 6], [(0, 1), (0, 2)])  # the hit at second 6 has k = 1, a degree only the parent can hold
     rep = events.replay(net, 2, 10)
-    rep["entry_sec"] = np.array([10, 5], np.int64)  # the parent is moved out of the pool although the hit stays
+    rep["entry_sec"] = np.array([10, 4, 6], np.int64)  # the parent is moved out of the pool although its hits stay
     with pytest.raises(ValueError, match="without exposure"):
         exposure.kernel_cells(net, rep, np.array([2, 10], np.int64), np.array([7], np.int32))
 
