@@ -276,9 +276,25 @@ def _read_parquet(path, key):
         return None
 
 
+def _filter_families(nodes, edges, families):
+    """Apply the families filter of _tables_uncached to the full tables without a string isin or map over the full columns."""
+    if not families:
+        return nodes, edges
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    want = set(families)
+    nodes = nodes[nodes.families.isin([u for u in nodes.families.unique() if want & set(u.split(";"))])]  # few distinct strings
+    ids = pa.array(nodes.id)
+    mask = np.asarray(pc.and_(pc.is_in(pa.array(edges.parent), value_set=ids), pc.is_in(pa.array(edges.child), value_set=ids)))
+    edges = edges[mask].drop(columns="date")
+    date = dict(zip(nodes.id, nodes.created_at))
+    edges = edges.assign(date=edges.child.map(date))  # the original last step on the subset keeps edges.date a str column when empty
+    return nodes.reset_index(drop=True), edges.reset_index(drop=True)
+
+
 def _cached_tables(version, aliases, families):
     """The final tables from DATA/.cache/, built and written on first use; None means no cache (off, no MANIFEST, md5 mismatch)."""
-    if _cache_off() or families:
+    if _cache_off():
         return None
     digests = _manifest_digests(DATA)
     if digests is None or not all((DATA / n).is_file() for n in _REQUIRED):
@@ -286,20 +302,26 @@ def _cached_tables(version, aliases, families):
     key = _cache_key(digests)
     nodes_path, edges_path = _cache_paths(DATA, version, aliases, key)
     nodes, edges = _read_parquet(nodes_path, key), _read_parquet(edges_path, key)
-    if nodes is not None and edges is not None:
-        return nodes, edges
-    bad = _csvs_match(DATA, digests)
-    if bad:
-        print(f"warning: {', '.join(bad)} in {DATA} do not match MANIFEST.txt - no cache written, tables built from the CSVs")
-        return None
-    nodes, edges = _tables_uncached(version, aliases, None)
-    try:
-        nodes_path.parent.mkdir(exist_ok=True)
-        _write_parquet(nodes, nodes_path, key)
-        _write_parquet(edges, edges_path, key)
-    except OSError as e:
-        print(f"note: cannot write the table cache in {nodes_path.parent} ({e}) - tables built from the CSVs")
-    return nodes, edges
+    if nodes is None or edges is None:
+        bad = _csvs_match(DATA, digests)
+        if bad:
+            print(f"warning: {', '.join(bad)} in {DATA} do not match MANIFEST.txt - no cache written, tables built from the CSVs")
+            return None
+        nodes, edges = _tables_uncached(version, aliases, None)
+        try:
+            nodes_path.parent.mkdir(exist_ok=True)
+            _write_parquet(nodes, nodes_path, key)
+            _write_parquet(edges, edges_path, key)
+        except OSError as e:
+            print(f"note: cannot write the table cache in {nodes_path.parent} ({e}) - tables built from the CSVs")
+        else:
+            for old in nodes_path.parent.glob(f"tables_{version}_{int(aliases)}_*.parquet"):  # files of an older key; best effort
+                if old not in (nodes_path, edges_path):
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
+    return _filter_families(nodes, edges, families)
 
 
 # ---------------------------------------------------------------- results
