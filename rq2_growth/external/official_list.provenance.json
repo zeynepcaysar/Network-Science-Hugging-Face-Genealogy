@@ -1,0 +1,43 @@
+{
+  "counts": {
+    "Gemma": {
+      "mirror": 526,
+      "official": 99,
+      "root": 33
+    },
+    "Llama": {
+      "mirror": 178,
+      "official": 61,
+      "root": 45
+    },
+    "Mistral": {
+      "mirror": 296,
+      "official": 81,
+      "root": 36
+    },
+    "Qwen": {
+      "mirror": 2341,
+      "official": 405,
+      "root": 158
+    }
+  },
+  "csv_md5": "01d6d1243b17a5a6a1990ad15b636fac",
+  "csv_name": "official_list.csv",
+  "freeze_date": "2026-11-26",
+  "inputs": {
+    "data/MANIFEST.txt": "2c5880de5623fc62d9d8372a8bf638da",
+    "data/edges.csv": "7badbaae00a7e6525116ae6ceff150d0",
+    "data/nodes.csv": "97c0069fbefe46d4828599f3659633a9"
+  },
+  "loader": "load.load_tables(\"full\")",
+  "mirror_rule": "A community node in family F is a mirror when the part of its id after the first \"/\" equals the repo name of an official F node under str.casefold; mirror_of is the first official id in sorted order on a tie.",
+  "notes": "Research prototypes (2026-11-26) evaluated all-family and community series under this same uploader rule before this freeze; the rule was fixed in discuss-phase D-09 and not changed after any kernel was seen.",
+  "org": {
+    "Gemma": "google",
+    "Llama": "meta-llama",
+    "Mistral": "mistralai",
+    "Qwen": "Qwen"
+  },
+  "rule": "A node is official for family F when F is among its families and its author (the id prefix) equals ORG[F]; only id, families, author and generation are read. is_root means generation 0 in the full network.",
+  "script": "rq2_growth/freeze_official.py"
+}

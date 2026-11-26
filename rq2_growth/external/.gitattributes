@@ -1,0 +1,2 @@
+# Frozen files are md5-checked against official_list.provenance.json; git must never convert their line endings.
+* -text
