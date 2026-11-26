@@ -85,6 +85,7 @@ SEED = 2026  # INFRA-06: base seed of every label stream; the same constant as c
 SIM_STEP = 0.01  # D-05, D-27: sub-batch step f, a batch closes once its arrivals reach f x the current pool; PROVISIONAL until rq2_growth/sim_convergence.py confirms it
 RULES = ("M0", "M1", "M1p", "M2", "M3")  # named attachment rules of simulate (M1p spells M1'); M2 and M3 need fitness and aging parameters
 RESOLUTIONS = ("exact", "month")  # time resolutions of arrivals_like: observed seconds, or seeded uniform draws inside each month
+MAX_REDRAWS = 1000  # simulate: rounds of redrawing duplicate parents of one slot before it gives up (reached only with absurdly concentrated weights)
 
 
 def _read(name):
@@ -657,18 +658,35 @@ def _seed_labels(seed, default):
     return (seed,)
 
 
-def arrivals_like(net, resolution="exact", seed=None):
-    """Arrival schedule of a loaded Net: every parentless node is a root, every other node one slot (D-01, D-02, D-03).
+def _ranges(start, count):
+    """Concatenated index ranges [start[i], start[i] + count[i]) as one int64 array (count[i] may be 0)."""
+    count = np.asarray(count, np.int64)
+    ends = np.cumsum(count)
+    total = int(ends[-1]) if len(ends) else 0
+    return np.repeat(np.asarray(start, np.int64), count) + np.arange(total) - np.repeat(ends - count, count)
 
-    Roots enter at load.pool_entry's entry second (a delayed root, undated or created after its first child, enters at that
-    first child's second; delayed flag kept). Roots with no entry second never enter and stay isolated. Slots are the other
-    nodes in (second, node index) order, each with m = its number of parents and the real child's author, is_swarm and rel
-    codes in its edge order. Undated slots come last. resolution="exact" keeps the observed seconds.
+
+def arrivals_like(net, resolution="exact", seed=None):
+    """Arrival schedule of a loaded Net, to replay with simulate (D-01, D-02, D-03, D-30).
+
+    Every parentless node is an exogenous root: it enters the pool at load.pool_entry's entry second (its created_at, or the
+    first child's second when it is undated or was created after that child, with the delayed flag kept) and attaches to
+    nothing. A parentless node with no entry second (undated, no dated child) never enters: it stays an isolated node of the
+    simulated Net and is counted in meta["n_never_entering_roots"]. Every other node is one slot, taken in (second, node
+    index) order, with m = its number of parents and the real child's author, is_swarm and rel codes in its edge order, so
+    ties inside a second are ordered by node index. A slot never records which real node it attached to (D-04).
+
+    Undated non-root nodes become undated slots after the last dated slot (D-30); in a simulation they draw from the final
+    dated pool and never become parents, although in the data such a node can be a delayed-entry parent. They are counted
+    in meta["n_undated_slots"], so node and edge counts equal the data's.
+
+    resolution="exact" keeps the observed seconds (default). resolution="month" keeps the number of dated slots in each
+    month and draws every dated slot's second uniformly inside its month (never before the first root entry), seeded by
+    seed (a label tuple, an int, or None for a fixed default stream; recorded in meta["seed"]), so the effect of bursts inside
+    a month can be tested; the slots are then reordered by their new seconds with their labels attached.
     """
     if resolution not in RESOLUTIONS:
         raise ValueError(f"resolution must be one of {RESOLUTIONS}")
-    if resolution != "exact":
-        raise NotImplementedError("resolution='month' is added with the real-data schedule rules")
     n = net.n_nodes
     indeg = np.bincount(net.child, minlength=n)
     entry, delayed = pool_entry(net)
@@ -680,16 +698,32 @@ def arrivals_like(net, resolution="exact", seed=None):
     m = indeg[slots]
     by_child = np.argsort(net.child, kind="stable")  # edge indices grouped by child, each child's edges in the net's edge order
     start = np.concatenate([[0], np.cumsum(indeg)])[:-1]
-    first = np.repeat(start[slots], m)
-    within = np.arange(int(m.sum())) - np.repeat(np.concatenate([[0], np.cumsum(m)])[:-1], m)
-    rel = net.rel[by_child[first + within]]
+    rel = net.rel[by_child[_ranges(start[slots], m)]]
     nodes = net.nodes
     author = nodes["author"].to_numpy(object)[slots] if nodes is not None and "author" in nodes.columns else None
     swarm = nodes["is_swarm"].to_numpy(bool)[slots] if nodes is not None and "is_swarm" in nodes.columns else None
     root_nodes = None if nodes is None else nodes.iloc[roots].reset_index(drop=True)
+    slot_sec = net.node_sec[slots]
     meta = {"net": {k: net.meta.get(k) for k in ("version", "aliases", "families", "source")}, "resolution": resolution,
-            "n_undated_slots": int((net.node_sec[slots] == NO_TIME).sum()), "n_never_entering_roots": int((entry[roots] == NO_TIME).sum())}
-    return Schedule(entry[roots], net.node_sec[slots], m, root_ids=net.ids[roots], root_delayed=delayed[roots],
+            "n_undated_slots": int((slot_sec == NO_TIME).sum()), "n_never_entering_roots": int((entry[roots] == NO_TIME).sum())}
+    if resolution == "month":
+        labels = _seed_labels(seed, ("arrivals_like", n, "month"))
+        rng = rng_for(*labels)
+        meta["seed"] = labels
+        entering = entry[roots][entry[roots] != NO_TIME]
+        first = int(entering.min()) if len(entering) else int(np.iinfo(np.int64).min)
+        dated = slot_sec != NO_TIME
+        month = month_of(slot_sec[dated])
+        lo = np.maximum(month_start_sec(month), first)
+        hi = month_start_sec(month + 1)
+        slot_sec = slot_sec.copy()
+        slot_sec[dated] = lo + np.minimum((rng.random(len(month)) * (hi - lo)).astype(np.int64), hi - lo - 1)
+        order = np.argsort(slot_sec, kind="stable")  # undated slots (NO_TIME) stay last
+        rel = rel[_ranges((np.cumsum(m) - m)[order], m[order])]
+        slot_sec, m = slot_sec[order], m[order]
+        author = None if author is None else author[order]
+        swarm = None if swarm is None else swarm[order]
+    return Schedule(entry[roots], slot_sec, m, root_ids=net.ids[roots], root_delayed=delayed[roots],
                     root_nodes=root_nodes, slot_rel=rel, slot_author=author, slot_is_swarm=swarm, meta=meta)
 
 
@@ -794,22 +828,56 @@ def _sim_net(schedule, parent, child, rel, depth, fam_mask, fam_names, meta):
     return Net(ids, node_sec, parent, child, rel, frame, meta)
 
 
+def _pick(u, c, pool):
+    """Engine positions in [0, pool) for uniforms u: floor(u * pool) for equal weights (c is None), else inverse of the cumulative weights c."""
+    if c is None:
+        return np.minimum((u * pool).astype(np.int64), pool - 1)
+    return np.minimum(np.searchsorted(c, u * c[-1], side="right"), pool - 1)
+
+
 def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None):
-    """Grow a seeded network on an arrival schedule and return it as a Net (the same class load_net returns).
+    """Grow a seeded network on an arrival schedule and return it as a Net, the same class load_net returns (SIM-01, SIM-03).
 
-    Each slot draws min(m, eligible) distinct parents with probability proportional to the weight w_i = (k_i + a)^beta, where
-    k_i is the node's current number of children. Rules (D-11, D-32): "M0" uniform (beta = 0), "M1" Price (beta = 1),
-    "M1p" (M1') needs beta, rule=None is the general form and needs beta. M2 and M3 (fitness, aging) arrive with plan 04.
+    Weights. A slot draws its parents with probability proportional to w_i = (k_i + a)^beta, where k_i is the node's current
+    number of children (D-11). Rules (D-11, D-32): "M0" uniform (beta = 0), "M1" Price (beta = 1), "M1p" (M1') needs beta,
+    rule=None is the general form and needs beta. "M2" and "M3" (fitness, aging) arrive with plan 04 and raise ValueError
+    until then. a must be > 0 and finite; weights that overflow float64 (beta very large) raise ValueError.
 
-    Batches (D-05): a batch closes once its arrivals reach step x the current pool (at least one arrival, extended to the end
-    of a timestamp group, never cutting between same-second events). The eligible pool of every arrival is the set of nodes
-    that entered in an earlier second, so a node is never a parent inside its own batch or its own second. step=0 forces one
-    arrival per batch (the reference mode for tests and small n; one Python iteration per event, so it is slow at scale).
-    Degrees update after each batch.
+    Batches (D-05). The events are the entering roots and all slots, merged by (second, roots before slots, node index). A
+    batch closes once its events reach step x the current pool (at least one event), is extended to the end of a timestamp
+    group, and is never cut inside a second; dated events and undated slots never share a batch. The eligible pool of every
+    arrival is the set of nodes that entered in an earlier second (strictly earlier, as in the estimator, P2 D-02), so nodes
+    of the same second never parent each other and a node is never a parent inside its own batch. Degrees update after each
+    batch (plan 04 adds the aging clock, read at the batch start). step=0 forces one arrival per batch: the slots of a second
+    then draw in schedule order, each seeing the degree updates of the earlier ones (never each other as parents). That is
+    the reference mode for tests and small n; it runs one Python iteration per event, so it is slow at scale. step=SIM_STEP
+    (1%) is provisional until rq2_growth/sim_convergence.py confirms it.
 
-    Random numbers (D-17): seed is a label tuple (or an int, or None for the default stream); the stream is rng_for(*labels).
-    Every parent draw consumes exactly one uniform, in slot order then parent position, so batchings with the same seed
-    consume the same numbers.
+    Draw rules (nothing is silently dropped or added; every shortfall is counted in meta):
+      * A slot draws min(m, eligible) distinct parents (D-03). A capped slot counts in n_m_capped and its missing edges in
+        n_edges_short, so n_edges = schedule.slot_m.sum() - n_edges_short. The edges take the slot's first rel codes.
+      * Random numbers (D-17): seed is a label tuple, an int or None (fixed default stream ("simulate", n_nodes)); the stream
+        is rng_for(*labels). Every parent draw consumes one uniform, in slot order then parent position, drawn per batch in
+        one call; M0 maps u to floor(u * eligible), the other weights to the inverse of the cumulative weights, so batchings
+        with the same seed use the same numbers. A duplicate inside one slot (later occurrence) is redrawn, one uniform per
+        duplicated entry in draw order, round after round until none remains.
+      * Bootstrap: a slot whose strictly-earlier pool is empty (the first second with slots, e.g. a delayed root and its
+        first child in one second) attaches among the roots that enter in its own second; those edges are counted in
+        n_bootstrap_edges, and every other edge has entry[parent] strictly before the child's second.
+      * Undated slots (node_sec NO_TIME) come last, draw from the final dated pool, never become parents; counted in
+        n_undated_slots. Roots that never enter (NO_TIME) stay isolated nodes, counted in n_never_entering_roots (D-02, D-30).
+
+    Labels (D-04). Node order is schedule order (roots in root order, then slots in slot order). Roots keep their real ids and
+    attributes; every other node is sim:NNNNNNN. A child takes author and is_swarm of its slot, families = the sorted
+    semicolon-joined union of its parents' families (at most 62 distinct root families), created_at from its second, and the
+    frame always has is_root, delayed, entry_sec (= node_sec) and depth (1 + the smallest parent depth, roots 0). meta has
+    source "sim", rule, a, beta, step, seed (the label tuple), numpy, schedule and the counters above plus n_batches.
+
+    Age clock limitation (D-14) and the delayed flag. A simulated root's node_sec is its entry second, so load.pool_entry(sim)
+    reports no delayed node, while nodes["delayed"] keeps the source root's real flag for stratifying. Entry seconds agree
+    under both, the two differ exactly on the source's delayed roots, and edge_use gives the same hits with either flag: it
+    only labels a delayed root's bootstrap edge same_second_as_entry instead of delayed_first, and neither label is a hit.
+    Undated parents look younger than they are, and in a simulation a delayed root's real first child no longer attaches to it.
     """
     rule_name, a, beta = _check_sim_args(rule, a, beta, step)
     if not isinstance(schedule, Schedule):
@@ -822,8 +890,6 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None)
     fam_names, root_mask = _family_masks(schedule)
     mask = np.concatenate([root_mask, np.zeros(n_s, np.int64)])
     depth = np.zeros(n, np.int64)
-    if (schedule.slot_m > 1).any():
-        raise ValueError("multi-parent slots are not supported yet")
 
     # merged event stream: entering roots and all slots, sorted by (second, roots before slots, node index)
     node_sec = np.concatenate([schedule.root_sec, schedule.slot_sec])
@@ -833,12 +899,16 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None)
     et, ek = node_sec[eng], is_slot[eng]
     n_events = len(eng)
     n_dated = int(np.searchsorted(et, NO_TIME, side="left"))
-    offset = np.concatenate([[0], np.cumsum(schedule.slot_m)])[:-1]
+    first_group = int(np.searchsorted(et, et[0], side="right")) if n_events else 0
+    first_roots = int(np.count_nonzero(~ek[:first_group]))  # roots entering in the first second (they come first in the stream)
+    offset = np.cumsum(schedule.slot_m) - schedule.slot_m  # start of each slot's rel codes
     deg = np.zeros(n_events, np.int64)
     w0 = np.zeros(n_events, np.float64)  # base weight (k + a)^beta of the events, updated for changed parents only
-    base = a ** beta
+    with np.errstate(over="ignore"):  # an overflow shows up as an infinite weight, which the batch loop turns into a ValueError
+        base = float(np.float64(a) ** beta)
     parents, children, rels = [], [], []
-    n_batches, i = 0, 0
+    n_batches = n_bootstrap = n_capped = n_short = 0
+    i = 0
     while i < n_events:
         n_el = int(np.searchsorted(et, et[i], side="left"))  # events strictly earlier than this one: the eligible pool
         if step == 0.0:
@@ -850,23 +920,49 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None)
         w0[i:j] = base  # entrants join with k = 0
         slots = i + np.flatnonzero(ek[i:j])
         if len(slots):
-            if n_el == 0:
-                raise ValueError("empty pool for the first slots")
-            u = rng.random(len(slots))
+            boot = n_el == 0
+            pool = first_roots if boot else n_el  # bootstrap: the roots that enter in the slots' own second
+            slot_node = eng[slots]
+            m_want = schedule.slot_m[slot_node - n_r]
+            m_eff = np.minimum(m_want, pool)
+            total = int(m_eff.sum())
             if beta == 0.0:
-                src = np.minimum((u * n_el).astype(np.int64), n_el - 1)
+                c = None
             else:
-                c = np.cumsum(w0[:n_el])
-                src = np.minimum(np.searchsorted(c, u * c[-1], side="right"), n_el - 1)
+                c = np.cumsum(w0[:pool])
+                if not (np.isfinite(c[-1]) and c[-1] > 0):
+                    raise ValueError(f"the weights (k + a)^beta are not finite or all zero (a={a}, beta={beta}): use a smaller |beta|")
+            src = _pick(rng.random(total), c, pool)
+            slot_of = np.repeat(np.arange(len(slots)), m_eff)  # slot (within the batch) of every draw, in draw order
+            multi = np.flatnonzero(m_eff[slot_of] > 1)  # draws of slots with several parents
+            rounds = 0
+            while len(multi):
+                _, keep = np.unique(slot_of[multi] * pool + src[multi], return_index=True)  # first occurrence in draw order stays
+                dup = np.ones(len(multi), bool)
+                dup[keep] = False
+                redo = multi[dup]
+                if len(redo) == 0:
+                    break
+                rounds += 1
+                if rounds > MAX_REDRAWS:
+                    raise RuntimeError(f"could not draw distinct parents after {MAX_REDRAWS} redraw rounds: the weights are too concentrated")
+                src[redo] = _pick(rng.random(len(redo)), c, pool)
             who, cnt = np.unique(src, return_counts=True)
             deg[who] += cnt
-            w0[who] = (deg[who] + a) ** beta
-            child_node, parent_node = eng[slots], eng[src]
-            depth[child_node] = depth[parent_node] + 1
-            mask[child_node] |= mask[parent_node]
-            parents.append(parent_node)
-            children.append(child_node)
-            rels.append(schedule.slot_rel[offset[child_node - n_r]])
+            with np.errstate(over="ignore"):
+                w0[who] = (deg[who] + a) ** beta
+            child_of_draw, parent_of_draw = slot_node[slot_of], eng[src]
+            low = np.full(len(slots), np.iinfo(np.int64).max)
+            np.minimum.at(low, slot_of, depth[parent_of_draw])
+            depth[slot_node] = low + 1
+            np.bitwise_or.at(mask, child_of_draw, mask[parent_of_draw])
+            parents.append(parent_of_draw)
+            children.append(child_of_draw)
+            rels.append(schedule.slot_rel[_ranges(offset[slot_node - n_r], m_eff)])
+            n_capped += int((m_eff < m_want).sum())
+            n_short += int((m_want - m_eff).sum())
+            if boot:
+                n_bootstrap += total
         n_batches += 1
         i = j
     empty = np.zeros(0, np.int64)
@@ -874,8 +970,8 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None)
     child = np.concatenate(children) if children else empty
     rel = np.concatenate(rels) if rels else np.zeros(0, np.int8)
     meta = {"source": "sim", "rule": rule_name, "a": a, "beta": beta, "step": step, "seed": labels, "numpy": np.__version__,
-            "schedule": schedule.meta, "n_batches": n_batches, "n_bootstrap_edges": 0, "n_m_capped": 0, "n_edges_short": 0,
-            "n_undated_slots": int((schedule.slot_sec == NO_TIME).sum()),
+            "schedule": schedule.meta, "n_batches": n_batches, "n_bootstrap_edges": n_bootstrap, "n_m_capped": n_capped,
+            "n_edges_short": n_short, "n_undated_slots": int((schedule.slot_sec == NO_TIME).sum()),
             "n_never_entering_roots": int((schedule.root_sec == NO_TIME).sum())}
     return _sim_net(schedule, parent, child, rel, depth, mask, fam_names, meta)
 
