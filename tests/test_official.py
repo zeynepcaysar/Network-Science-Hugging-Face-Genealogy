@@ -287,3 +287,15 @@ def test_real_counts():
     assert df[df.is_root].official.all()
     assert not nodes.loc[off.id, "is_swarm"].any()
     assert (df[(df.family == "Qwen") & ~df.official].mirror_of != "").sum() == 2341
+
+
+@pytest.mark.data
+def test_committed_list_matches_data():
+    import load
+    from rq2lib import official
+    listed, md5 = official.read_official()  # default path: md5-checked against the sidecar
+    pd.testing.assert_frame_equal(listed, official.build_official(load.load_tables("full")[0]))
+    prov = json.loads(official.sidecar_path(official.OFFICIAL_CSV).read_text(encoding="utf-8"))
+    assert prov["csv_md5"] == md5
+    for name, want in prov["inputs"].items():
+        assert official.file_md5(load.DATA / name.split("/", 1)[1]) == want, name
