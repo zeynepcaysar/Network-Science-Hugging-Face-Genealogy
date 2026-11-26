@@ -9,11 +9,16 @@ tests. sim_statistics(net) computes the seven statistics of D-06, with the defin
 rq2lib.sim_stats (and checks parity against). shift_ratio(coarse, fine) is the D-06 criterion: the shift of the medians of
 two ensembles over 1/4 of the 2.5-97.5% band of the finer one, passing when the ratio is strictly below PASS_RATIO.
 
-Used by tests/test_sim_invariants.py, tests/test_sim_reference.py and tests/test_sim_convergence.py (the tests/ folder is
-on the pytest path, see pyproject.toml).
+price_pk(k, a), rrt_mean_depth(n) and population_alpha(a, xmin) are the exact references of the known-answer tests (SIM-05):
+the stationary Price degree distribution, the mean node depth of a random recursive tree, and the value powerlaw's discrete
+estimator converges to on Price degrees.
+
+Used by tests/test_sim_invariants.py, tests/test_sim_reference.py, tests/test_sim_convergence.py,
+tests/test_sim_known_answers.py and tests/test_sim_wrappers.py (the tests/ folder is on the pytest path, see pyproject.toml).
 """
 import numpy as np
 import pandas as pd
+from scipy import optimize, special
 
 
 def make_net(nodes, edges):
@@ -139,3 +144,50 @@ def shift_ratio(coarse, fine):
     if band == 0.0:
         return shift, band, (0.0 if shift == 0.0 else float("inf"))
     return shift, band, shift / band
+
+
+# ---------------------------------------------------------------- exact references (SIM-05, D-28)
+K_MAX = 10**7  # population_alpha sums the exact p_k up to here; the tail mass beyond it is asserted below TAIL_MAX
+TAIL_MAX = 1e-6
+
+
+def price_pk(k, a):
+    """Exact stationary degree distribution of the Price model with m = 1 and offset a: p_k = P(a node has k children).
+
+    p_0 = (1 + a)/(1 + 2a) and p_k = p_0 Gamma(k + a) Gamma(2a + 2) / (Gamma(a) Gamma(k + 2a + 2)) for k >= 0 (the same formula
+    gives p_0 at k = 0). For a = 1 it is 4/((k + 1)(k + 2)(k + 3)). It is evaluated in log space with gammaln, so k = 10**6 and
+    beyond lose no precision; the tail goes as k^-(2 + a). k may be an int or an array; the result has k's shape.
+    """
+    k = np.asarray(k, np.float64)
+    p0 = (1.0 + a) / (1.0 + 2.0 * a)
+    return p0 * np.exp(special.gammaln(k + a) + special.gammaln(2.0 * a + 2.0) - special.gammaln(a) - special.gammaln(k + 2.0 * a + 2.0))
+
+
+def rrt_mean_depth(n):
+    """Exact mean node depth of a random recursive tree of n nodes with one root at depth 0: H_(n-1) - (n-1)/n (about ln n - 0.42)."""
+    return float(np.sum(1.0 / np.arange(1, n, dtype=np.float64)) - (n - 1) / n)
+
+
+def population_alpha(a, xmin):
+    """The value powerlaw 2.0.0's discrete fit at a fixed xmin converges to on exact Price degrees (n -> infinity), a and xmin given.
+
+    powerlaw.Fit(data, discrete=True, xmin=xmin) with xmin < 10 does not use the closed-form approximation
+    1 + n / sum(ln(x / (xmin - 1/2))) (it is switched on only from xmin = 10); it maximises the exact discrete likelihood
+    x^-alpha / zeta(alpha, xmin) numerically (Nelder-Mead, alpha limited to [0, 3]). Its population value minimises
+    alpha E[ln k | k >= xmin] + ln zeta(alpha, xmin) with k ~ price_pk(., a), the expectation summed from xmin to K_MAX in
+    blocks. The truncated tail mass is asserted below TAIL_MAX. The result is the fit's limit, not 2 + a/m: the stationary
+    p_k is only asymptotically a power law, so the fit is biased low at small xmin (D-28).
+    """
+    lnk = mass = 0.0
+    for lo in range(0, K_MAX + 1, 10**6):
+        k = np.arange(lo, min(lo + 10**6, K_MAX + 1), dtype=np.float64)
+        p = price_pk(k, a)
+        mass += float(p.sum())
+        keep = k >= xmin
+        lnk += float((p[keep] * np.log(k[keep])).sum())
+    assert 1.0 - mass < TAIL_MAX, f"tail mass beyond K_MAX is {1.0 - mass:.3g}"
+    head = float(price_pk(np.arange(0, xmin), a).sum())  # P(k < xmin)
+    mean_ln = lnk / (1.0 - head)
+    res = optimize.minimize_scalar(lambda x: x * mean_ln + np.log(special.zeta(x, xmin)), bounds=(1.01, 8.0), method="bounded",
+                                   options={"xatol": 1e-10})
+    return float(res.x)
