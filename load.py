@@ -37,12 +37,16 @@ such as "None" or "NA", otherwise turn into missing values.
 
 Check a data copy with `python load.py --verify`: it prints PASS / FAIL / note lines for every entry of
 data/MANIFEST.txt and exits 1 on any FAIL. md5 detects a corrupted or incomplete copy; it is not a security
-control. load() and load_tables() never run the check.
+control. load() and load_tables() do not call verify_data(); a cold cache build md5s the four required CSVs against MANIFEST.txt once.
 
 Folders: the environment variable HFG_DATA replaces data/ as the input folder (read once, when this module is
 imported) and HFG_RESULTS replaces results/ as the output root (read each time a results helper is called).
-Both are ignored when unset or empty, so without them nothing changes. The data folder is only ever read.
+Both are ignored when unset or empty, so without them nothing changes. Data files are only read; a .cache/ subfolder of the data folder is written (parquet table cache).
 Tables and figures written through save_table and save_fig are byte-identical when a script is rerun.
+
+Table cache: when DATA/MANIFEST.txt exists, load_tables() caches the final tables of each (version, aliases) in DATA/.cache/
+(parquet, keyed on the MANIFEST md5 entries, CACHE_SCHEMA and the pandas major version; rebuilt when stale or damaged, the output
+never changes). HFG_CACHE=off (read at each call, empty counts as unset) bypasses it; deleting the folder resets it.
 """
 import hashlib, re, sys
 import os
@@ -72,6 +76,7 @@ PLOT_STYLE = {  # rcParams applied by use_style() to every RQ figure; plain valu
 FAMILY_COLORS = {"Llama": "#0072B2", "Mistral": "#D55E00", "Qwen": "#009E73", "Gemma": "#CC79A7"}  # Okabe-Ito, colour-blind safe
 VERSION_STYLES = {"full": "-", "no_swarm": "--", "quant_collapsed": ":"}  # one linestyle per network version
 USE_REASONS = ("used", "undated_child", "outside_window", "delayed_first", "same_second_as_entry")  # reason code of every edge (int8 = position); used = hit; precedence = the order of the checks in edge_use (D-05)
+CACHE_SCHEMA = "1"  # INFRA-01: part of the cache key; bump it when the cached table layout or the build in _tables_uncached changes
 
 
 def _read(name):
@@ -85,6 +90,14 @@ def load_tables(version="full", aliases=False, families=None):
     """Return (nodes, edges) DataFrames for one network version."""
     if version not in VERSIONS:
         raise ValueError(f"version must be one of {VERSIONS}")
+    cached = _cached_tables(version, aliases, families)
+    if cached is not None:
+        return cached
+    return _tables_uncached(version, aliases, families)
+
+
+def _tables_uncached(version, aliases, families):
+    """The uncached build of data v1: read the CSVs, then apply version, alias and family filters."""
     nodes = _read("nodes.csv")
     edges = _read("edges_quant_collapsed.csv" if version == "quant_collapsed" else "edges.csv")
     for col in ["date_backfilled", "is_swarm", "is_quant_copy", "has_metadata", "alias_only"]:
@@ -176,6 +189,117 @@ def verify_data(data_dir=None):
                         else ("FAIL", name, f"md5 {got} does not match MANIFEST {want}"))
     rows += [("FAIL", "data/" + n, "not listed in MANIFEST.txt") for n in _REQUIRED if ("data", n) not in listed]
     return rows
+
+
+# ---------------------------------------------------------------- cache
+def _cache_off():
+    """True when HFG_CACHE is "off" (read at each call, case-insensitive; empty or unset means the cache is on)."""
+    return os.environ.get("HFG_CACHE", "").strip().lower() == "off"
+
+
+def _manifest_digests(data):
+    """{name: md5} of the four required CSVs from data/MANIFEST.txt, or None when it is not a file or lacks one of them."""
+    manifest = data / "MANIFEST.txt"
+    if not manifest.is_file():
+        return None
+    try:
+        lines = manifest.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    digests = {}
+    for want, _, name in (m.groups() for m in map(_MANIFEST_LINE.match, lines) if m):
+        parts = PurePosixPath(name).parts
+        if len(parts) == 2 and parts[0] == "data" and parts[1] in _REQUIRED:
+            digests[parts[1]] = want
+    return digests if set(digests) == set(_REQUIRED) else None
+
+
+def _cache_key(digests):
+    """16 hex characters identifying the cache generation: CACHE_SCHEMA, the pandas major version and the four md5 entries."""
+    text = "|".join([CACHE_SCHEMA, pd.__version__.split(".")[0]] + [f"{n}={digests[n]}" for n in sorted(_REQUIRED)])
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _cache_paths(data, version, aliases, key):
+    """(nodes file, edges file) of one (version, aliases) pair under data/.cache/."""
+    stem = data / ".cache" / f"tables_{version}_{int(aliases)}_{key}"
+    return stem.with_name(stem.name + ".nodes.parquet"), stem.with_name(stem.name + ".edges.parquet")
+
+
+def _csvs_match(data, digests):
+    """Names of the required CSVs whose md5 differs from the MANIFEST (or that cannot be read); [] when all agree."""
+    bad = []
+    for name in _REQUIRED:
+        try:
+            with open(data / name, "rb") as handle:
+                got = hashlib.file_digest(handle, lambda: hashlib.md5(usedforsecurity=False)).hexdigest()
+        except OSError:
+            got = None
+        if got != digests[name]:
+            bad.append(name)
+    return bad
+
+
+def _replace_into_place(path, write):
+    """Write through a temporary file in the same folder and rename it into place, so a reader never sees half a file."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        write(tmp)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def _write_parquet(frame, path, key):
+    """Write frame as zstd parquet with the key, the file name and the row count in the schema metadata."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.Table.from_pandas(frame)
+    meta = dict(table.schema.metadata or {})
+    meta.update({b"hfg_key": key.encode(), b"hfg_name": path.name.encode(), b"hfg_rows": str(table.num_rows).encode()})
+    table = table.replace_schema_metadata(meta)
+    _replace_into_place(path, lambda tmp: pq.write_table(table, tmp, compression="zstd"))
+
+
+def _read_parquet(path, key):
+    """The frame in path, or None when the file is missing, unreadable, or its key, name or row count does not match."""
+    import pyarrow.parquet as pq
+    try:
+        table = pq.read_table(path)
+        meta = table.schema.metadata or {}
+        if (meta.get(b"hfg_key") != key.encode() or meta.get(b"hfg_name") != path.name.encode()
+                or meta.get(b"hfg_rows") != str(table.num_rows).encode()):
+            return None
+        return table.to_pandas()
+    except Exception:  # corrupt, truncated, foreign or unreadable: the caller rebuilds from the CSVs
+        return None
+
+
+def _cached_tables(version, aliases, families):
+    """The final tables from DATA/.cache/, built and written on first use; None means no cache (off, no MANIFEST, md5 mismatch)."""
+    if _cache_off() or families:
+        return None
+    digests = _manifest_digests(DATA)
+    if digests is None or not all((DATA / n).is_file() for n in _REQUIRED):
+        return None
+    key = _cache_key(digests)
+    nodes_path, edges_path = _cache_paths(DATA, version, aliases, key)
+    nodes, edges = _read_parquet(nodes_path, key), _read_parquet(edges_path, key)
+    if nodes is not None and edges is not None:
+        return nodes, edges
+    bad = _csvs_match(DATA, digests)
+    if bad:
+        print(f"warning: {', '.join(bad)} in {DATA} do not match MANIFEST.txt - no cache written, tables built from the CSVs")
+        return None
+    nodes, edges = _tables_uncached(version, aliases, None)
+    try:
+        nodes_path.parent.mkdir(exist_ok=True)
+        _write_parquet(nodes, nodes_path, key)
+        _write_parquet(edges, edges_path, key)
+    except OSError as e:
+        print(f"note: cannot write the table cache in {nodes_path.parent} ({e}) - tables built from the CSVs")
+    return nodes, edges
 
 
 # ---------------------------------------------------------------- results
