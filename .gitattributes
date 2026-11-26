@@ -3,3 +3,6 @@
 tests/fixtures/** text eol=lf
 tests/golden/** text eol=lf
 data_pipeline/renames.csv -text
+# Committed RQ2 pilot outputs are compared byte for byte against git blobs, so they stay LF on every OS.
+results/rq2/*.csv text eol=lf
+results/rq2/*.md text eol=lf
