@@ -13,6 +13,8 @@ Works from any folder after `bash setup.sh` (which runs `pip install -e .`).
     net = load_net("no_swarm", families=["Qwen"])   # array network: integer ids, edges sorted by time, no networkx
     entry, delayed = pool_entry(net)           # when each node becomes a candidate parent (D-02, D-04, D-05)
     k = event_degree(net)                      # the parent's degree just before each attachment (D-01, D-03)
+    d = outdeg_before(net, month_start_sec(m)) # out-degree at the start of month m (months since 1970-01); not the kernel's k
+    G = net.to_networkx()                      # the same graph load() gives, for small nets and checks
     save_table(df, "name", "rq2")              # results/rq2/name.csv with fixed bytes (UTF-8, LF, no index)
     use_style(); save_fig(fig, "name", "rq2")  # shared plot style; results/rq2/name.png
 
@@ -281,6 +283,14 @@ class Net:
         """Integer positions of model ids (-1 for unknown ids)."""
         return pd.Index(self.ids).get_indexer(ids).astype(np.int64)
 
+    def to_networkx(self):
+        """Return the same graph load() gives (nodes in id order, edges parent -> child with rel); for small nets and checks, not the hot path."""
+        G = nx.DiGraph()
+        G.add_nodes_from(self.ids.tolist())
+        G.add_edges_from((self.ids[p], self.ids[c], {"rel": REL_CODES[r]})
+                         for p, c, r in zip(self.parent.tolist(), self.child.tolist(), self.rel.tolist()))
+        return G
+
 
 def load_net(version="full", aliases=False, families=None):
     """Return the network as an array-based Net (ids in sorted string order, edges sorted by time)."""
@@ -300,6 +310,21 @@ def load_net(version="full", aliases=False, families=None):
 
 
 # ---------------------------------------------------------------- time
+def month_start_sec(month):
+    """Epoch seconds (int64) of 00:00 UTC on the first day of month(s) given as months since 1970-01 (the inverse of month_of)."""
+    return np.asarray(month, np.int64).astype("datetime64[M]").astype("datetime64[s]").astype(np.int64)
+
+
+def outdeg_before(net, sec):
+    """Out-degree of every node counting edges with t strictly smaller than sec (int64 array, one entry per node).
+
+    This is the start-of-month style degree, for example outdeg_before(net, month_start_sec(m)) for monthly top-20 lists.
+    It is NOT the kernel's k: the kernel uses event_degree, the degree at each event (D-01).
+    """
+    hi = np.searchsorted(net.t, sec, side="left")
+    return np.bincount(net.parent[:hi], minlength=net.n_nodes)
+
+
 def event_degree(net):
     """k_e = number of the parent's children with a strictly smaller t (tie rule D-03: a tie sees the degree before it)."""
     if net.n_edges == 0:
