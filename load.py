@@ -15,7 +15,11 @@ Works from any folder after `bash setup.sh` (which runs `pip install -e .`).
     k = event_degree(net)                      # the parent's degree just before each attachment (D-01, D-03)
     d = outdeg_before(net, month_start_sec(m)) # out-degree at the start of month m (months since 1970-01); not the kernel's k
     G = net.to_networkx()                      # the same graph load() gives, for small nets and checks
-    save_table(df, "name", "rq2")              # results/rq2/name.csv with fixed bytes (UTF-8, LF, no index)
+    codes = edge_use(net, entry, delayed, start, end)   # why each edge is a hit or not; start and end are epoch seconds, no default
+    counts = edge_use_counts(codes)            # total, one count per reason, share_used
+    # Pool rule: a parent is a candidate from entry_sec; a hit needs t inside [start, end) and t > entry_sec[parent]; every
+    # output reports share_used (edge_use_counts).
+    save_table(df, "name", "rq2")            # results/rq2/name.csv with fixed bytes (UTF-8, LF, no index)
     use_style(); save_fig(fig, "name", "rq2")  # shared plot style; results/rq2/name.png
 
 Node attributes: families (tuple, e.g. ("Llama",) or () outside the four families), generation
@@ -67,6 +71,7 @@ PLOT_STYLE = {  # rcParams applied by use_style() to every RQ figure; plain valu
 }
 FAMILY_COLORS = {"Llama": "#0072B2", "Mistral": "#D55E00", "Qwen": "#009E73", "Gemma": "#CC79A7"}  # Okabe-Ito, colour-blind safe
 VERSION_STYLES = {"full": "-", "no_swarm": "--", "quant_collapsed": ":"}  # one linestyle per network version
+USE_REASONS = ("used", "undated_child", "outside_window", "delayed_first", "same_second_as_entry")  # reason code of every edge (int8 = position); used = hit; precedence = the order of the checks in edge_use (D-05)
 
 
 def _read(name):
@@ -354,6 +359,38 @@ def pool_entry(net, node_sec=None):
     np.minimum.at(first, net.parent, net.t)
     delayed = (first != NO_TIME) & (sec > first)
     return np.where(delayed, first, sec), delayed
+
+
+def edge_use(net, entry_sec, delayed, start, end):
+    """Reason code (int8 index into USE_REASONS) for every edge, in the net's edge order.
+
+    An edge is a hit ("used") only if start <= t < end and t > entry_sec[parent] (D-02). Every other edge gets exactly one
+    reason, chosen by the precedence of USE_REASONS read from the right: undated_child, then outside_window, then
+    delayed_first (a child in a delayed parent's entry second, D-19), then same_second_as_entry. start and end are epoch
+    seconds with no default: the caller chooses the window (D-06, D-07 live in the RQ2 code).
+    """
+    entry_sec, delayed = np.asarray(entry_sec, np.int64), np.asarray(delayed, bool)
+    entry, late, t = entry_sec[net.parent], delayed[net.parent], net.t
+    dated = t != NO_TIME
+    if (dated & (t < entry)).any():
+        raise ValueError("edge before its parent's pool entry - pool rule broken")
+    code = {name: i for i, name in enumerate(USE_REASONS)}
+    out = np.full(net.n_edges, code["used"], np.int8)
+    out[(t == entry) & ~late] = code["same_second_as_entry"]
+    out[(t == entry) & late] = code["delayed_first"]
+    out[(t < start) | (t >= end)] = code["outside_window"]
+    out[~dated] = code["undated_child"]
+    return out
+
+
+def edge_use_counts(codes):
+    """Counts of edge_use codes as a dict: total, one count per USE_REASONS name, share_used (used / total, 0.0 for no edges)."""
+    codes = np.asarray(codes)
+    counts = np.bincount(codes, minlength=len(USE_REASONS)) if len(codes) else np.zeros(len(USE_REASONS), np.int64)
+    out = {"total": int(len(codes))}
+    out.update({name: int(n) for name, n in zip(USE_REASONS, counts)})
+    out["share_used"] = out["used"] / out["total"] if out["total"] else 0.0
+    return out
 
 
 if __name__ == "__main__":
