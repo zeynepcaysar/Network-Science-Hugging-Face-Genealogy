@@ -21,6 +21,7 @@ Works from any folder after `bash setup.sh` (which runs `pip install -e .`).
     # output reports share_used (edge_use_counts).
     save_table(df, "name", "rq2")            # results/rq2/name.csv with fixed bytes (UTF-8, LF, no index)
     use_style(); save_fig(fig, "name", "rq2")  # shared plot style; results/rq2/name.png
+    rng = rng_for("rq1", i)                    # numpy Generator from labels (D-17); same labels, same stream
 
 Node attributes: families (tuple, e.g. ("Llama",) or () outside the four families), generation
 (distance to the nearest family root in the version you loaded, None outside the families), created_at (pandas Timestamp, UTC,
@@ -55,6 +56,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 import networkx as nx
 import numpy as np
 import pandas as pd
+import numbers
 
 _HFG_DATA = os.environ.get("HFG_DATA")  # INFRA-07: data folder override, read once at import; empty counts as unset
 DATA = Path(_HFG_DATA).expanduser().resolve() if _HFG_DATA else Path(__file__).resolve().parent / "data"
@@ -77,6 +79,7 @@ FAMILY_COLORS = {"Llama": "#0072B2", "Mistral": "#D55E00", "Qwen": "#009E73", "G
 VERSION_STYLES = {"full": "-", "no_swarm": "--", "quant_collapsed": ":"}  # one linestyle per network version
 USE_REASONS = ("used", "undated_child", "outside_window", "delayed_first", "same_second_as_entry")  # reason code of every edge (int8 = position); used = hit; precedence = the order of the checks in edge_use (D-05)
 CACHE_SCHEMA = "1"  # INFRA-01: part of the cache key; bump it when the cached table layout or the build in _tables_uncached changes
+SEED = 2026  # INFRA-06: base seed of every label stream; the same constant as checks/edge_check.py
 
 
 def _read(name):
@@ -322,6 +325,29 @@ def _cached_tables(version, aliases, families):
                     except OSError:
                         pass
     return _filter_families(nodes, edges, families)
+
+
+# ---------------------------------------------------------------- seeds
+def _label_key(labels):
+    """Canonical bytes of a label tuple: each label as its kind (s, i, f), its text length and its text, so no two tuples collide."""
+    parts = []
+    for x in labels:
+        if isinstance(x, str):
+            tag, text = "s", x  # taken as given: no Unicode normalisation
+        elif isinstance(x, numbers.Integral) and not isinstance(x, (bool, np.bool_)):
+            tag, text = "i", str(int(x))
+        elif isinstance(x, numbers.Real) and not isinstance(x, (bool, np.bool_)):
+            tag, text = "f", repr(float(x))
+        else:
+            raise TypeError(f"rng_for labels must be str, int or float, not {type(x).__name__}")
+        parts.append(f"{tag}{len(text)}:{text}")
+    return "".join(parts).encode("utf-8")
+
+
+def rng_for(*labels):
+    """numpy Generator (PCG64) for these labels: the same labels give the same stream on every run and machine with the pinned numpy; streams are not promised across numpy versions."""
+    words = np.frombuffer(hashlib.sha256(_label_key(labels)).digest(), dtype="<u4").tolist()  # eight fixed-length entropy words, so no trailing-zero collision
+    return np.random.default_rng(np.random.SeedSequence([SEED, *words]))
 
 
 # ---------------------------------------------------------------- results

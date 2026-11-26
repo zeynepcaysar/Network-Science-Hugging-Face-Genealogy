@@ -108,4 +108,4 @@ def test_returns_pcg64_generator():
 
 def test_pinned_literals():
     # Recorded under numpy 2.5.5. A failure after a numpy upgrade means the streams moved (RESEARCH A7): re-pin on purpose.
-    assert first("a", 1).tolist() == [0.0, 0.0, 0.0]
+    assert first("a", 1).tolist() == [0.7332926265907753, 0.9035971635946229, 0.32490601457337687]
