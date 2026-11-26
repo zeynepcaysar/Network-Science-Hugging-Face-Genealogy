@@ -55,6 +55,11 @@ Results are reported on all three versions (`full`, `no_swarm`, `quant_collapsed
 attributes are listed at the top of `load.py`. The CSVs are read with `dtype=str,
 keep_default_na=False`, since some model ids (`None`, `NA`) would otherwise become missing values.
 
+The first load of each version (with or without aliases) writes a parquet cache to `data/.cache/` (about
+44 MB each, up to about 220 MB; git-ignored through `data/*`). Later loads take well under a second. The cache
+rebuilds itself when `MANIFEST.txt` changes or a file is damaged; delete the folder to reset it, or set
+`HFG_CACHE=off` to bypass it.
+
 ## Repository layout
 
 | Folder | Content |

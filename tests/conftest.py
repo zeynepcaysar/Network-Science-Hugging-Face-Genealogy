@@ -9,12 +9,14 @@ Run from the repo root after activating the venv (`source .venv/bin/activate` on
 
 The conftest writes nothing.
 """
+import hashlib
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "data_mini"
+REQUIRED = ("nodes.csv", "edges.csv", "edges_quant_collapsed.csv", "edges_aliases.csv")
 
 
 @pytest.fixture
@@ -22,6 +24,23 @@ def mini(monkeypatch):
     """The `load` module with load.DATA pointing at tests/fixtures/data_mini (looked up at call time)."""
     import load
     monkeypatch.setattr(load, "DATA", FIXTURE)
+    return load
+
+
+@pytest.fixture
+def mini_cached(tmp_path, monkeypatch):
+    """The `load` module with load.DATA at a tmp copy of data_mini plus a generated MANIFEST.txt, so the cache is on."""
+    import load
+    data = tmp_path / "data"
+    data.mkdir()
+    lines = ["built 2026-11-26T00:00:00 by data_pipeline/analyse.py", "edge types from model files: yes", ""]
+    for name in REQUIRED:
+        content = (FIXTURE / name).read_bytes()
+        (data / name).write_bytes(content)
+        lines.append(f"{hashlib.md5(content).hexdigest()}    {len(content.splitlines()):>9,} rows  data/{name}")
+    (data / "MANIFEST.txt").write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    monkeypatch.setattr(load, "DATA", data)
+    monkeypatch.delenv("HFG_CACHE", raising=False)
     return load
 
 
