@@ -5,8 +5,14 @@ event_degree -> save_table under HFG_RESULTS, on the committed mini fixture (rea
 written table against a brute-force count of each parent's earlier children. The two Net tests build the
 class from raw arrays (no CSVs) to check ordering and the validation errors.
 
+The load_net tests run on all 25 golden (version, aliases, families) combinations of the mini fixture and compare
+the array network with load_tables() and load(): node and edge counts, id order, edge order, second-floored node
+times, relation codes, and the graph that Net.to_networkx() returns. The oracles read the tables with plain Python
+and pandas, never through a load.py helper under test.
+
 Run from the repo root after activating the venv:  python -m pytest tests/test_net.py
 """
+import calendar
 import os
 import subprocess
 import sys
@@ -16,7 +22,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from golden_codec import COMBOS
+
 ROOT = Path(__file__).resolve().parents[1]
+NO_TIME = np.iinfo(np.int64).max  # independent copy of load.NO_TIME (the oracle must not import what it checks)
+REL_NAMES = ("finetune", "adapter", "quantized", "merge", "unknown", "reupload")  # independent copy of load.REL_CODES
 FIXTURE = ROOT / "tests" / "fixtures" / "data_mini"
 
 TRACER = """
@@ -97,3 +107,79 @@ def test_net_sorts_edges_and_keeps_same_second_pairs():
     assert net.t.tolist() == [5, 10, 20, 20, load.NO_TIME]
     assert net.n_nodes == 5 and net.node_sec[0] == net.node_sec[1] == 10
     assert net.meta["n_undated_child_edges"] == 1
+
+
+# ---------------------------------------------------------------- load_net against load_tables() and load()
+def floor_seconds(ts):
+    """Epoch seconds of a UTC Timestamp floored to the second; NaT -> NO_TIME (plain calendar arithmetic)."""
+    return NO_TIME if pd.isna(ts) else calendar.timegm(ts.utctimetuple())
+
+
+@pytest.mark.parametrize("version,aliases,families,label", COMBOS, ids=[c[3] + f"-{c[0]}-{c[1]}" for c in COMBOS])
+def test_load_net_matches_load_tables(mini, version, aliases, families, label):
+    nodes, edges = mini.load_tables(version, aliases, families)
+    net = mini.load_net(version, aliases, families)
+    assert net.n_nodes == len(nodes) and net.n_edges == len(edges)
+
+    assert [type(i) for i in net.ids] == [str] * len(nodes)
+    assert net.ids.tolist() == sorted(nodes.id)
+    assert len(set(net.ids.tolist())) == net.n_nodes
+
+    assert np.array_equal(np.lexsort((net.parent, net.child, net.t)), np.arange(net.n_edges))
+    dated = net.t != NO_TIME
+    assert not (~dated[:-1] & dated[1:]).any()  # an undated edge is never followed by a dated one
+
+    want_sec = dict(zip(nodes.id, (floor_seconds(ts) for ts in nodes.created_at)))
+    assert net.node_sec.dtype == np.int64
+    assert net.node_sec.tolist() == [want_sec[i] for i in net.ids]
+    assert net.t.tolist() == [want_sec[net.ids[c]] for c in net.child]
+
+    want_rel = {(p, c): r for p, c, r in zip(edges.parent, edges.child, edges.rel)}
+    got_rel = {(net.ids[p], net.ids[c]): REL_NAMES[r] for p, c, r in zip(net.parent, net.child, net.rel)}
+    assert got_rel == want_rel
+
+    assert net.meta["version"] == version and net.meta["aliases"] == aliases
+    assert net.meta["families"] == (tuple(families) if families else None)
+    assert net.meta["source"] == "data"
+    assert net.meta["n_undated_child_edges"] == int((~dated).sum())
+
+
+@pytest.mark.parametrize("version,aliases,families,label", COMBOS, ids=[c[3] + f"-{c[0]}-{c[1]}" for c in COMBOS])
+def test_to_networkx_matches_load(mini, version, aliases, families, label):
+    G = mini.load(version, aliases, families)
+    H = mini.load_net(version, aliases, families).to_networkx()
+    assert H.is_directed()
+    assert set(H.nodes) == set(G.nodes)
+    assert set(H.edges) == set(G.edges)
+    assert {(p, c): d["rel"] for p, c, d in H.edges(data=True)} == {(p, c): d["rel"] for p, c, d in G.edges(data=True)}
+
+
+def test_empty_family_net(mini):
+    net = mini.load_net("full", families=["Nonexistent"])
+    assert net.n_nodes == 0 and net.n_edges == 0
+    assert net.node_sec.dtype == np.int64 and net.t.dtype == np.int64
+    assert net.parent.dtype == np.int32 and net.child.dtype == np.int32
+    assert net.rel.dtype == np.int8
+    assert net.to_networkx().number_of_nodes() == 0
+
+
+def test_epoch_seconds_floors_subseconds():
+    import load
+    stamps = pd.Series(pd.to_datetime(["2024-07-23T10:00:00.700Z", "2024-07-23T10:00:01Z", None], utc=True, format="ISO8601"))
+    base = calendar.timegm((2024, 7, 23, 10, 0, 0))
+    assert load._epoch_seconds(stamps).tolist() == [base, base + 1, NO_TIME]
+
+
+def test_shuffled_input_gives_same_net():
+    import load
+    ids = np.array(["a", "b", "c", "d", "e"], dtype=object)
+    sec = np.array([10, 10, 5, load.NO_TIME, 20], dtype=np.int64)
+    pairs = [(2, 4), (0, 3), (0, 1), (1, 4), (0, 2)]
+    rel = {pair: i % 3 for i, pair in enumerate(pairs)}
+
+    def build(order):
+        return load.Net(ids, sec, [pairs[i][0] for i in order], [pairs[i][1] for i in order], [rel[pairs[i]] for i in order])
+
+    one, two = build([0, 1, 2, 3, 4]), build([4, 2, 0, 3, 1])
+    for name in ("parent", "child", "t", "rel", "month"):
+        assert np.array_equal(getattr(one, name), getattr(two, name)), name
