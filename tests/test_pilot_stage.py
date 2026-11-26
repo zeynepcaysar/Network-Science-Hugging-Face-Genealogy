@@ -114,11 +114,13 @@ def test_params_table_contents(runs):
     for version, want in (("full", expected["events_full"]), ("no_swarm", expected["events_no_swarm"])):
         rows = params[params.version == version]
         assert (rows.events_total.astype(int) == want).all()
-        assert (rows.outside_window.astype(int) == expected["outside_window"] == 1).all()
+        assert expected["outside_window"] == 1
+        assert (rows.outside_window.astype(int) == expected["outside_window"]).all()
         assert (rows.undated_child.astype(int) == 0).all()
         assert (rows.delayed_first.astype(int) == expected["delayed_first"]).all()
         assert (rows.same_second_as_entry.astype(int) == expected["same_second_as_entry"]).all()
-    assert (params.window_start == expected["window_start"] == "2026-07-01T00:00:00Z").all()
+    assert expected["window_start"] == "2026-07-01T00:00:00Z"
+    assert (params.window_start == expected["window_start"]).all()
     assert (params.window_end == "2026-11-01T00:00:00Z").all()
     assert (params.min_parents == "30").all()
 
