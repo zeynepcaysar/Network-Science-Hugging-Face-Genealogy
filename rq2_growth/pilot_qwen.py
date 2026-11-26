@@ -29,7 +29,7 @@ import pandas as pd  # noqa: E402
 
 import load  # noqa: E402
 from rq2lib import bins as degree_bins  # noqa: E402
-from rq2lib import events, exposure, kernel, official  # noqa: E402
+from rq2lib import events, exposure, figure, kernel, note, official  # noqa: E402
 from rq2lib.numbers import numbers_frame  # noqa: E402
 
 STAGE = "pilot_qwen"
@@ -210,6 +210,14 @@ def main():
     numbers_df = numbers_frame([(STAGE, version, FAMILY, series, name, value) for version, series, name, value in numbers])
     for frame, name in ((bins, "pilot_qwen_bins"), (params, "pilot_qwen_params"), (numbers_df, "numbers_pilot_qwen")):
         print(f"wrote {load.save_table(frame, name, RQ, float_format=FLOAT_FORMAT)}")
+
+    # (e) the figure and the note, from the same frames
+    import matplotlib.pyplot as plt
+    fig = figure.pilot_figure(bins, params, versions)
+    print(f"wrote {load.save_fig(fig, 'pilot_qwen_pi_k', RQ)}")
+    plt.close(fig)
+    ctx = {"params": params, "bins": bins, "numbers": numbers_df, "versions": versions, "family": FAMILY}
+    print(f"wrote {note.write_note(note.render_note(ctx), load.results_dir(RQ) / 'pilot_qwen.md')}")
     return 0
 
 
