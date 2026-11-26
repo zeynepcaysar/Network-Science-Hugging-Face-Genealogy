@@ -14,6 +14,7 @@ Works from any folder after `bash setup.sh` (which runs `pip install -e .`).
     entry, delayed = pool_entry(net)           # when each node becomes a candidate parent (D-02, D-04, D-05)
     k = event_degree(net)                      # the parent's degree just before each attachment (D-01, D-03)
     save_table(df, "name", "rq2")              # results/rq2/name.csv with fixed bytes (UTF-8, LF, no index)
+    use_style(); save_fig(fig, "name", "rq2")  # shared plot style; results/rq2/name.png
 
 Node attributes: families (tuple, e.g. ("Llama",) or () outside the four families), generation
 (distance to the nearest family root in the version you loaded, None outside the families), created_at (pandas Timestamp, UTC,
@@ -35,6 +36,7 @@ control. load() and load_tables() never run the check.
 Folders: the environment variable HFG_DATA replaces data/ as the input folder (read once, when this module is
 imported) and HFG_RESULTS replaces results/ as the output root (read each time a results helper is called).
 Both are ignored when unset or empty, so without them nothing changes. The data folder is only ever read.
+Tables and figures written through save_table and save_fig are byte-identical when a script is rerun.
 """
 import hashlib, re, sys
 import os
@@ -53,6 +55,16 @@ RESULTS = Path(__file__).resolve().parent / "results"  # default results root; H
 NO_TIME = np.iinfo(np.int64).max  # epoch-second sentinel for a missing date: sorts last, never inside a window, an undated parent counts as later than any child
 REL_CODES = ("finetune", "adapter", "quantized", "merge", "unknown", "reupload")  # edge rel values plus "reupload" (alias edges); int8 code = position
 _NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")  # allowed results file and folder names: ASCII, no separators, no leading dot
+PLOT_STYLE = {  # rcParams applied by use_style() to every RQ figure; plain values, so importing load never imports matplotlib
+    "figure.dpi": 100, "savefig.dpi": 150, "savefig.bbox": "tight",  # screen size; saved PNGs at 150 dpi
+    "font.family": "DejaVu Sans", "font.size": 10,  # DejaVu Sans ships with matplotlib, so every OS draws the same glyphs
+    "axes.titlesize": 11, "axes.labelsize": 10, "legend.fontsize": 9,
+    "axes.spines.top": False, "axes.spines.right": False, "axes.grid": True, "grid.alpha": 0.3, "grid.linewidth": 0.5,
+    "lines.linewidth": 1.5, "lines.markersize": 5,
+    "axes.prop_cycle": "cycler('color', ['#0072B2', '#D55E00', '#009E73', '#CC79A7', '#E69F00', '#56B4E9', '#F0E442', '#000000'])",  # Okabe-Ito
+}
+FAMILY_COLORS = {"Llama": "#0072B2", "Mistral": "#D55E00", "Qwen": "#009E73", "Gemma": "#CC79A7"}  # Okabe-Ito, colour-blind safe
+VERSION_STYLES = {"full": "-", "no_swarm": "--", "quant_collapsed": ":"}  # one linestyle per network version
 
 
 def _read(name):
@@ -188,6 +200,22 @@ def save_table(df, name, rq, float_format="%.10g"):
     file = _check_name(name) + ".csv"
     path = results_dir(rq) / file
     df.to_csv(path, index=False, lineterminator="\n", float_format=float_format, na_rep="", encoding="utf-8")
+    return path
+
+
+def use_style():
+    """Apply the shared figure style (PLOT_STYLE); select the Agg backend unless MPLBACKEND is set."""
+    import matplotlib
+    if not os.environ.get("MPLBACKEND"):
+        matplotlib.use("Agg")
+    matplotlib.rcParams.update(PLOT_STYLE)
+
+
+def save_fig(fig, name, rq, dpi=150):
+    """Write fig to <results root>/<rq>/<name>.png without a Software chunk (PNG only: SVG bytes are not stable); return the path."""
+    file = _check_name(name) + ".png"
+    path = results_dir(rq) / file
+    fig.savefig(path, format="png", dpi=dpi, metadata={"Software": None})
     return path
 
 
