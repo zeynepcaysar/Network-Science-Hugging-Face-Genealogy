@@ -31,12 +31,15 @@ CI_LABEL = "naive: events treated as independent; cluster bootstrap in Phase 5"
 
 # Chain recovery. The asserted seeds and the seeds that set the tolerance are disjoint, so the seeds that set the tolerance
 # never test it. Tolerance rule, fixed here before any estimator exists: TOL = 4 x the standard deviation of the fitted value
-# over TOL_SEEDS = range(1, 21), rounded up to two significant digits. The values below are PROVISIONAL (RED commit); the GREEN
-# step only measures the spread over TOL_SEEDS and replaces them, with the mean and standard deviation in this comment.
+# over TOL_SEEDS = range(1, 21), rounded up to two significant digits. Measured over TOL_SEEDS (sample standard deviation, 20
+# fits through the real chain, all converged, none on the bound): a has mean 1.0386 and sd 0.1284, so TOL_A = 4 x 0.1284 =
+# 0.5137 -> 0.52; beta has mean 1.0069 and sd 0.0412, so TOL_BETA = 4 x 0.0412 = 0.1648 -> 0.17. (The RED commit carried the
+# provisional 0.5 and 0.1.) Neither mean differs from 1 by more than 1.4 standard errors of the mean, so there is no sign of
+# estimator or chain bias.
 CHAIN_SEEDS = (101, 102, 103)
 TOL_SEEDS = tuple(range(1, 21))
-TOL_A = 0.5
-TOL_BETA = 0.1
+TOL_A = 0.52
+TOL_BETA = 0.17
 PI_21_TOL = 0.3  # Pi(2)/Pi(1) against the planted 1.5: about 3 standard errors at this size
 CHAIN_START = calendar.timegm((2025, 1, 1, 0, 0, 0))
 CHAIN_END = calendar.timegm((2025, 6, 1, 0, 0, 0))
