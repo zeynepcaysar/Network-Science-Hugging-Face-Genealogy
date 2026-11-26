@@ -13,3 +13,21 @@ for version in ["full", "no_swarm", "quant_collapsed"]:
 ```
 
 Save outputs to `results/rq2/`.
+
+## Stages
+
+| Script | What it does | Outputs |
+|---|---|---|
+| `freeze_official.py` | One-shot: freezes the official/root/mirror list for Qwen, Llama, Mistral and Gemma (already run); `--check` verifies the list, its md5 and the input md5s | `rq2_growth/external/official_list.csv` and `official_list.provenance.json` |
+| `pilot_qwen.py` | Qwen pilot: attachment kernel Π(k), first (a, β) with a naive CI, edge-use share | the `results/rq2/` files listed in its `OUTPUTS` constant: `pilot_qwen_pi_k.png`, `pilot_qwen_bins.csv`, `pilot_qwen_params.csv`, `numbers_pilot_qwen.csv`, `pilot_qwen.md` |
+
+The pilot is the exception to the "all three versions" sentence above: it covers Qwen on `full` and `no_swarm` only. `quant_collapsed` and the four matched base models come in Phase 5.
+
+After activating the venv:
+
+```bash
+python rq2_growth/freeze_official.py --check
+python rq2_growth/pilot_qwen.py
+```
+
+`HFG_DATA` and `HFG_RESULTS` point a run at other data and output folders (unset: `data/` and `results/`). `rq2lib/` holds the RQ2 helpers (event table, exposure, classes, kernel).
