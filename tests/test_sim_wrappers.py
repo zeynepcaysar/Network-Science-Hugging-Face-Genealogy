@@ -35,11 +35,20 @@ README = Path(__file__).resolve().parent.parent / "README.md"
 ASSERT_SEEDS = (101, 102, 103)
 WRAPPERS = ["random_recursive_tree", "price_tree"]
 
-# Calibration (provisional until measured on the wrappers): see the comment block above each constant after calibration.
-TOL_DEPTH = {10_000: 2.4, 100_000: 1.7}
-TOL_PK = {1.0: (0.0039, 0.0038, 0.0021, 0.0024, 0.0013), 3.0: (0.0046, 0.0066, 0.0033, 0.0028, 0.0022)}
-TOL_TAIL = {1.0: 0.0021, 3.0: 0.0013}
-TOL_ALPHA = {1.0: 0.058, 3.0: 0.017}
+# Calibration, seeds 1..20 with the labels used below (sample sd, ddof = 1), TOL = 4 sd rounded up to two significant digits.
+# Mean depth of random_recursive_tree minus the exact value: n = 10,000: mean -0.051, sd 0.744 -> 2.976 -> 3.0;
+# n = 100,000: mean -0.200, sd 0.597 -> 2.386 -> 2.4.
+TOL_DEPTH = {10_000: 3.0, 100_000: 2.4}
+# Share of price_tree nodes with k children minus the exact p_k (mean, sd), n = 100,000:
+#   a = 1: k = 0 (0.00007, 0.00101), k = 1 (0.00006, 0.00110), k = 2 (-0.00002, 0.00072), k = 3 (-0.00015, 0.00051),
+#          k = 4 (0.00006, 0.00045), tail k >= 5 (-0.00002, 0.00039)
+#   a = 3: k = 0 (-0.00016, 0.00105), k = 1 (0.00005, 0.00121), k = 2 (0.00049, 0.00086), k = 3 (-0.00019, 0.00057),
+#          k = 4 (-0.00010, 0.00040), tail k >= 5 (-0.00009, 0.00045)
+TOL_PK = {1.0: (0.0041, 0.0044, 0.0029, 0.0021, 0.0019), 3.0: (0.0043, 0.0049, 0.0035, 0.0023, 0.0017)}
+TOL_TAIL = {1.0: 0.0016, 3.0: 0.0018}
+# powerlaw alpha minus its population value (a = 1, xmin 5: population 2.5906, mean -0.0027, sd 0.0154; a = 3, xmin 2: population
+# 2.5022, mean 0.0027, sd 0.0066).
+TOL_ALPHA = {1.0: 0.062, 3.0: 0.027}
 ALPHA_XMIN = {1.0: 5, 3.0: 2}
 
 

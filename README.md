@@ -60,6 +60,50 @@ The first load of each version (with or without aliases) writes a parquet cache 
 rebuilds itself when `MANIFEST.txt` changes or a file is damaged; delete the folder to reset it, or set
 `HFG_CACHE=off` to bypass it.
 
+## Null trees
+
+`load.py` also builds the textbook trees that RQ1 and RQ4 compare the real network with. Both return a `Net`, the array
+network of `load_net`: one root at second 0, node `i` one second after node `i - 1`, ids `sim:0000000`, `sim:0000001`, ... and a
+`depth` column (root = 0).
+
+- `random_recursive_tree(n)`: every node attaches to a uniformly chosen earlier node. The mean node depth is
+  H(n-1) - (n-1)/n, about ln n - 0.42 (the newest node sits at about ln n); a node has k children with probability 2^-(k+1).
+- `price_tree(n, a=1.0)`: every node attaches with probability proportional to k + a, where k is the number of children it has so
+  far (`a > 0`). With one parent per node (m = 1) the degree tail has exponent 2 + a/m: 3 for `a = 1`, 5 for `a = 3`. The exact
+  degree distribution is in `tests/sim_helpers.py` (`price_pk`); a power-law fit at a small `xmin` gives a lower exponent than 2 + a/m
+  even on exact trees, because the distribution is only asymptotically a power law.
+
+```python
+from load import random_recursive_tree, price_tree, simulate, arrivals_like, load_net
+
+tree = random_recursive_tree(100_000)                       # one root, 99,999 edges, a Net
+price = price_tree(100_000, a=1.0)                          # same shape; a = 1 is linear preferential attachment
+depth = tree.nodes["depth"].mean()                          # about 11.1 on average for n = 100,000 (exact: 11.09)
+members = [price_tree(100_000, seed=("rq1", i)) for i in range(20)]   # an ensemble of 20 different trees
+G = tree.to_networkx()                                      # networkx DiGraph, for small trees and checks
+```
+
+Seeds. Two calls without `seed` return the same tree (a fixed stream per function and `n`). For an ensemble pass a different label
+tuple per member, such as `seed=("rq1", i)` (labels are strings, integers or floats; an int is one label). The tree records its
+labels and the numpy version in `net.meta`; the streams are reproducible for the pinned numpy only.
+
+Matched null. The trees above have one root. A real family has many roots (for example 158 Qwen roots, with a mean leaf depth of
+1.4-2.4 against ln n of about 12), so comparing the depth of a real family with `ln n` or with a single-root tree is misleading.
+Replay the observed arrival schedule instead, with the same attachment rule:
+
+```python
+nulls = [simulate(arrivals_like(load_net("no_swarm")), rule="M0", seed=("rq1", i)) for i in range(20)]
+```
+
+`simulate` returns a `Net` with the same nodes, roots, arrival times and number of parents per node as the data, attached at
+random; `rule="M1"` gives preferential attachment on the same schedule (see the docstring of `simulate` for the other rules).
+Its batch step `SIM_STEP = 0.01` is provisional until the RQ2 convergence stage confirms it, so a null drawn today may differ
+slightly from one drawn after that stage; the README and the code will say when it is settled.
+
+Runtimes measured on one Windows machine: the two wrappers take about 1 s for 1,000,000 nodes (including building the `Net`); `arrivals_like` takes
+about 0.2 s on a loaded `no_swarm` net and one `simulate` run of rule M0 or M1 about 1.5-2 s on that schedule; `.to_networkx()`
+of a 1,000,000-node net takes about 3 s, so build the graph only for small trees and checks.
+
 ## Repository layout
 
 | Folder | Content |

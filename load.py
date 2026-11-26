@@ -24,6 +24,13 @@ Works from any folder after `bash setup.sh` (which runs `pip install -e .`).
     rng = rng_for("rq1", i)                    # numpy Generator from labels (D-17); same labels, same stream
     sched = arrivals_like(net)                 # arrival schedule of any Net (D-01, D-02)
     sim = simulate(sched, rule="M1", seed=("rq2", i))   # seeded growth Net, same class as load_net's
+    tree = random_recursive_tree(100_000)      # RQ1/RQ4 null tree: every node attaches uniformly; a Net, like load_net's
+    trees = [price_tree(100_000, a=1.0, seed=("rq4", i)) for i in range(20)]   # Price tree (attachment ~ k + a); ensemble members get distinct labels
+    sim = simulate(arrivals_like(load_net("no_swarm")), rule="M0", seed=("rq1", i))   # matched null on the observed arrival schedule (README: Null trees)
+    sim = simulate(sched, rule="M3", a=1.0, eta=("lognormal", 1.0), aging=("exp", 180.0))   # fitness and aging
+    G = tree.to_networkx()                     # networkx graph of a Net: about 3 s at 1M nodes, one Python object per node and edge, so for small trees and checks
+    # SIM_STEP (0.01, the simulate batch step) is provisional until the RQ2 convergence stage confirms it; seeded streams are
+    # reproducible for the pinned numpy only. random_recursive_tree and price_tree are exact generators, not calls into simulate.
 
 Node attributes: families (tuple, e.g. ("Llama",) or () outside the four families), generation
 (distance to the nearest family root in the version you loaded, None outside the families), created_at (pandas Timestamp, UTC,
@@ -1139,6 +1146,86 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
             "n_edges_short": n_short, "n_undated_slots": int((schedule.slot_sec == NO_TIME).sum()),
             "n_never_entering_roots": int((schedule.root_sec == NO_TIME).sum())}
     return _sim_net(schedule, parent, child, rel, depth, mask, fam_names, meta, eta=eta_node)
+
+
+# ---------------------------------------------------------------- null trees
+def _tree_size(n, n_roots):
+    """(n, n_roots) as Python ints: both must be integers (numpy integers fine, bools and floats refused), 1 <= n_roots <= n."""
+    for name, value in (("n", n), ("n_roots", n_roots)):
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Integral):
+            raise ValueError(f"{name} must be an integer, got {value!r}")
+    n, n_roots = int(n), int(n_roots)
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
+    if not 1 <= n_roots <= n:
+        raise ValueError(f"n_roots must be in [1, n] = [1, {n}], got {n_roots}")
+    return n, n_roots
+
+
+def _tree_net(parent, n, n_roots, labels, meta):
+    """Net of a tree built outside simulate: parent[j] is the parent of node n_roots + j; roots sit at second 0, node i at second i - n_roots + 1.
+
+    It goes through the same builder as simulate on synthetic_arrivals(n, n_roots=n_roots), so the ids (sim:0000000, ...), the
+    nodes columns (id, families, author, is_swarm, created_at, is_root, delayed, entry_sec, depth) and the edge order are the
+    same; rel is "unknown". The depth is one pass, because every parent precedes its child.
+    """
+    schedule = synthetic_arrivals(n, n_roots=n_roots)
+    depth = [0] * n
+    for child, p in zip(range(n_roots, n), parent.tolist()):
+        depth[child] = depth[p] + 1
+    meta = dict(meta, seed=labels, numpy=np.__version__, n_roots=n_roots, schedule=schedule.meta)
+    rel = np.full(n - n_roots, REL_CODES.index("unknown"), np.int8)
+    return _sim_net(schedule, parent, np.arange(n_roots, n, dtype=np.int64), rel, np.array(depth, np.int64),
+                    np.zeros(n, np.int64), [], meta)
+
+
+def random_recursive_tree(n, *, n_roots=1, seed=None):
+    """Random recursive tree of n nodes as a Net: every node attaches to a uniformly chosen earlier node (SIM-04, D-15, D-29).
+
+    An exact O(n) generator, not a call into simulate: one vectorised draw, the parent of node i is floor(u * i). With
+    n_roots = 1 the mean node depth is H_(n-1) - (n-1)/n (about ln n - 0.42) and the out-degree law is 2^-(k+1); with several
+    roots (at second 0, attached to nothing) nodes attach among all earlier nodes. Node i sits at second i - n_roots + 1; ids are
+    sim:0000000, ...; n = 1 is one root and no edges. The default seed is the fixed stream ("random_recursive_tree", n): pass
+    seed=("rq1", i) (labels or an int) for ensemble member i. The tree equals simulate(synthetic_arrivals(n, n_roots=n_roots),
+    rule="M0", step=0, seed=seed), array for array (tested).
+    """
+    n, n_roots = _tree_size(n, n_roots)
+    labels = _seed_labels(seed, ("random_recursive_tree", n))
+    i = np.arange(n_roots, n, dtype=np.int64)
+    u = rng_for(*labels).random(n - n_roots)
+    parent = np.minimum((u * i).astype(np.int64), i - 1)
+    meta = {"generator": "random_recursive_tree", "rule": "M0", "a": None, "beta": 0.0}
+    return _tree_net(parent, n, n_roots, labels, meta)
+
+
+def price_tree(n, a=1.0, *, n_roots=1, seed=None):
+    """Price (preferential attachment) tree of n nodes as a Net: node i attaches to an earlier node with probability proportional to k + a (SIM-04, D-15, D-29).
+
+    k is the node's number of children so far and a > 0 its offset; m = 1 parent per node, so the stationary degree law is
+    p_0 = (1 + a)/(1 + 2a), p_k = p_0 Gamma(k + a) Gamma(2a + 2) / (Gamma(a) Gamma(k + 2a + 2)) with tail exponent 2 + a/m. An
+    exact O(n) urn generator, not a call into simulate: with probability a i / (a i + e) (e = earlier edges) the parent is a
+    uniform earlier node, otherwise the parent of a uniformly chosen earlier edge, which is the exact (k + a) kernel. Shape,
+    seeds and ids as in random_recursive_tree (default seed ("price_tree", n)); the tree agrees with simulate(...,
+    rule="M1", a=a, step=0) in distribution (tested).
+    """
+    n, n_roots = _tree_size(n, n_roots)
+    if isinstance(a, (bool, np.bool_)):
+        raise ValueError(f"a must be a number, got {a!r}")
+    a = _number(a, "a")
+    if not (np.isfinite(a) and a > 0):
+        raise ValueError(f"a must be finite and > 0, got {a}")
+    labels = _seed_labels(seed, ("price_tree", n))
+    rng = rng_for(*labels)
+    u, v = rng.random(n - n_roots).tolist(), rng.random(n - n_roots).tolist()
+    edge_parent = []  # edge_parent[e] = parent of the e-th edge; node n_roots + e is its child
+    for e in range(n - n_roots):
+        i = n_roots + e  # existing nodes are 0 .. i - 1, each with weight a; the e earlier edges add weight 1 each
+        if e == 0 or u[e] * (a * i + e) < a * i:
+            edge_parent.append(int(v[e] * i))
+        else:
+            edge_parent.append(edge_parent[int(v[e] * e)])
+    meta = {"generator": "price_tree", "rule": "M1", "a": a, "beta": 1.0}
+    return _tree_net(np.array(edge_parent, np.int64), n, n_roots, labels, meta)
 
 
 if __name__ == "__main__":
