@@ -86,6 +86,8 @@ SIM_STEP = 0.01  # D-05, D-27: sub-batch step f, a batch closes once its arrival
 RULES = ("M0", "M1", "M1p", "M2", "M3")  # named attachment rules of simulate (M1p spells M1'); M2 and M3 need fitness and aging parameters
 RESOLUTIONS = ("exact", "month")  # time resolutions of arrivals_like: observed seconds, or seeded uniform draws inside each month
 MAX_REDRAWS = 1000  # simulate: rounds of redrawing duplicate parents of one slot before it gives up (reached only with absurdly concentrated weights)
+ETA_KINDS = ("lognormal", "exponential", "empirical")  # fitness specs of simulate: ("lognormal", sigma), ("exponential",), ("empirical", values); or a per-node array (D-12)
+AGING_KINDS = ("exp", "power", "lognormal", "piecewise")  # aging presets of simulate, dt in days since pool entry; plain tuples only, never callables (D-13)
 
 
 def _read(name):
@@ -727,14 +729,25 @@ def arrivals_like(net, resolution="exact", seed=None):
                     root_nodes=root_nodes, slot_rel=rel, slot_author=author, slot_is_swarm=swarm, meta=meta)
 
 
-def _check_sim_args(rule, a, beta, step):
-    """Validate simulate's rule, a, beta and step; return (rule name, a, beta) with the rule's fixed beta filled in."""
+def _check_sim_args(rule, a, beta, eta, aging, step):
+    """Validate simulate's rule, a, beta, step and which of eta and aging are given; return (rule name, a, beta).
+
+    Each shortcut checks that it gets the parameters it takes and none it does not (D-11, D-32): M0 has no beta other than 0,
+    no eta and no aging; M1 beta 1 if given, no eta, no aging; M1p needs beta, no eta, no aging; M2 needs eta (beta 1 if
+    given), no aging; M3 needs eta and aging (beta 1 if given); rule=None is the general form and needs beta, with eta and
+    aging optional. The values of eta and aging are checked by _eta_values and _check_aging.
+    """
     if rule is not None and rule not in RULES:
         raise ValueError(f"rule must be one of {RULES} or None (general form with beta), not {rule!r}")
-    if rule in ("M2", "M3"):
-        raise ValueError(f"rule {rule} needs the fitness eta (and for M3 the aging) parameters that plan 04 of phase 3 adds; "
-                         f"use one of M0, M1, M1p or the general form with beta until then")
-    fixed = {"M0": 0.0, "M1": 1.0}
+    if eta is not None and rule in ("M0", "M1", "M1p"):
+        raise ValueError(f"rule {rule} takes no eta (fitness): use M2, M3 or the general form with beta")
+    if aging is not None and rule in ("M0", "M1", "M1p", "M2"):
+        raise ValueError(f"rule {rule} takes no aging: use M3 or the general form with beta")
+    if rule in ("M2", "M3") and eta is None:
+        raise ValueError(f"rule {rule} needs eta (a spec from ETA_KINDS or a per-node array)")
+    if rule == "M3" and aging is None:
+        raise ValueError("rule M3 needs aging (a preset from AGING_KINDS)")
+    fixed = {"M0": 0.0, "M1": 1.0, "M2": 1.0, "M3": 1.0}
     if rule in fixed:
         if beta is not None and float(beta) != fixed[rule]:
             raise ValueError(f"rule {rule} has beta = {fixed[rule]}: leave beta unset (or use the general form)")
@@ -749,6 +762,118 @@ def _check_sim_args(rule, a, beta, step):
     if not (np.isfinite(step) and 0.0 <= step <= 1.0):
         raise ValueError(f"step must be in [0, 1] (0 = one arrival per batch), got {step}")
     return rule or "general", a, beta
+
+
+def _number(x, what):
+    """x as a float; strings, callables and other objects raise ValueError (serialisable specs only, D-13)."""
+    if isinstance(x, (str, bytes)) or callable(x):
+        raise ValueError(f"{what} must be a number, got {type(x).__name__}")
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        raise ValueError(f"{what} must be a number, got {x!r}") from None
+
+
+def _eta_values(eta, n, rng):
+    """(fitness values or None, spec for the meta) of an eta argument: None, a spec tuple or a per-node array (D-12).
+
+    Specs are drawn per node in schedule order from rng (the fitness stream, separate from the attachment stream):
+    ("lognormal", sigma) is exp(sigma Z) with median 1, ("exponential",) has mean 1, ("empirical", values) resamples values.
+    A per-node array (length n, finite, > 0) is taken as given and recorded as "array". Callables and other objects raise.
+    """
+    if eta is None:
+        return None, None
+    if isinstance(eta, (tuple, list)) and len(eta) > 0 and isinstance(eta[0], str):
+        kind, args = eta[0], tuple(eta[1:])
+        if kind not in ETA_KINDS:
+            raise ValueError(f"eta kind must be one of ETA_KINDS {ETA_KINDS}, got {kind!r}")
+        if kind == "lognormal":
+            if len(args) != 1:
+                raise ValueError("eta ('lognormal', sigma) takes one number")
+            sigma = _number(args[0], "eta lognormal sigma")
+            if not (np.isfinite(sigma) and sigma > 0):
+                raise ValueError(f"eta lognormal sigma must be finite and > 0, got {sigma}")
+            return np.exp(sigma * rng.standard_normal(n)), ("lognormal", sigma)
+        if kind == "exponential":
+            if args:
+                raise ValueError("eta ('exponential',) takes no parameter")
+            return rng.exponential(1.0, n), ("exponential",)
+        if len(args) != 1:
+            raise ValueError("eta ('empirical', values) takes one sequence of positive numbers")
+        try:
+            values = np.asarray(args[0], np.float64)
+        except (TypeError, ValueError):
+            raise ValueError("eta empirical values must be numbers") from None
+        if values.ndim != 1 or len(values) == 0 or not (np.isfinite(values).all() and (values > 0).all()):
+            raise ValueError("eta empirical values must be a non-empty 1-D sequence of finite numbers > 0")
+        return values[rng.integers(0, len(values), n)], ("empirical", tuple(float(v) for v in values))
+    if callable(eta) or isinstance(eta, (str, bytes, dict)):
+        raise ValueError(f"eta must be a spec tuple starting with one of ETA_KINDS {ETA_KINDS} or a per-node array, not {type(eta).__name__}")
+    try:
+        values = np.asarray(eta, np.float64)
+    except (TypeError, ValueError):
+        raise ValueError(f"eta must be a spec tuple (ETA_KINDS {ETA_KINDS}) or a per-node array of numbers, not {type(eta).__name__}") from None
+    if values.ndim != 1 or len(values) != n:
+        raise ValueError(f"an eta array needs one value per node in schedule order ({n}), got shape {values.shape}")
+    if not (np.isfinite(values).all() and (values > 0).all()):
+        raise ValueError("eta values must be finite and > 0")
+    return values, "array"
+
+
+def _check_aging(aging):
+    """Normalised aging spec (a tuple of floats), or None; callables, unknown kinds and bad values raise ValueError (D-13)."""
+    if aging is None:
+        return None
+    if callable(aging) or not isinstance(aging, (tuple, list)) or len(aging) == 0 or not isinstance(aging[0], str):
+        raise ValueError(f"aging must be a tuple starting with one of AGING_KINDS {AGING_KINDS} (no callables), got {type(aging).__name__}")
+    kind, args = aging[0], tuple(aging[1:])
+    if kind not in AGING_KINDS:
+        raise ValueError(f"aging kind must be one of AGING_KINDS {AGING_KINDS}, got {kind!r}")
+    if kind == "piecewise":
+        if len(args) != 2:
+            raise ValueError("aging ('piecewise', edges_days, values) takes two sequences")
+        try:
+            edges, values = np.asarray(args[0], np.float64), np.asarray(args[1], np.float64)
+        except (TypeError, ValueError):
+            raise ValueError("aging piecewise edges and values must be numbers") from None
+        if edges.ndim != 1 or values.ndim != 1 or len(edges) == 0 or len(edges) != len(values):
+            raise ValueError("aging piecewise edges and values must be 1-D, non-empty and of equal length")
+        if not (np.isfinite(edges).all() and np.isfinite(values).all()):
+            raise ValueError("aging piecewise edges and values must be finite")
+        if edges[0] != 0 or (np.diff(edges) <= 0).any():
+            raise ValueError("aging piecewise edges (days) must start at 0 and increase strictly")
+        if (values < 0).any() or not (values > 0).any():
+            raise ValueError("aging piecewise values must be >= 0 and not all zero")
+        return ("piecewise", tuple(float(e) for e in edges), tuple(float(v) for v in values))
+    need = {"exp": 1, "power": 1, "lognormal": 2}[kind]
+    if len(args) != need:
+        raise ValueError(f"aging {kind} takes {need} number{'s' if need > 1 else ''}, got {len(args)}")
+    nums = tuple(_number(x, f"aging {kind} parameter") for x in args)
+    if not np.isfinite(nums).all():
+        raise ValueError(f"aging {kind} parameters must be finite, got {nums}")
+    if (kind == "exp" and nums[0] <= 0) or (kind == "lognormal" and nums[1] <= 0):
+        raise ValueError(f"aging {kind}: tau and sigma must be > 0, got {nums}")
+    return (kind, *nums)
+
+
+def _aging_weights(spec, dt_days):
+    """float64 aging factors A(dt) of a valid aging spec for ages dt_days (days since pool entry), D-13.
+
+    ("exp", tau): exp(-dt/tau); ("power", nu): (1 + dt)^-nu; ("lognormal", mu, sigma): exp(-(ln(1 + dt) - mu)^2 / (2 sigma^2)) / (1 + dt),
+    the Wang-Song-Barabasi shape on the clock 1 + dt (so dt = 0 is defined); ("piecewise", edges_days, values): values[i] for
+    edges_days[i] <= dt < edges_days[i + 1], the last value from the last edge on.
+    """
+    dt = np.asarray(dt_days, np.float64)
+    kind = spec[0]
+    if kind == "exp":
+        return np.exp(-dt / float(spec[1]))
+    if kind == "power":
+        return (1.0 + dt) ** -float(spec[1])
+    if kind == "lognormal":
+        clock = 1.0 + dt
+        return np.exp(-(np.log(clock) - float(spec[1])) ** 2 / (2.0 * float(spec[2]) ** 2)) / clock
+    edges, values = np.asarray(spec[1], np.float64), np.asarray(spec[2], np.float64)
+    return values[np.maximum(np.searchsorted(edges, dt, side="right") - 1, 0)]
 
 
 def _family_masks(schedule):
@@ -785,12 +910,13 @@ def _created_at(sec):
     return pd.Series(pd.to_datetime(np.where(dated, sec, 0), unit="s", utc=True)).mask(~dated)
 
 
-def _sim_net(schedule, parent, child, rel, depth, fam_mask, fam_names, meta):
+def _sim_net(schedule, parent, child, rel, depth, fam_mask, fam_names, meta, eta=None):
     """Build a simulated Net from schedule order arrays (node indices: roots first, then slots), through the Net constructor.
 
     Ids are the real root ids where the schedule has them, else sim:NNNNNNN (zero-padded schedule position, wider from 10**7
     nodes). The nodes frame is the roots' real rows plus one row per slot (author and is_swarm from the slot, families from
-    fam_mask, created_at from the slot second, every other column missing), and always has is_root, delayed, entry_sec, depth.
+    fam_mask, created_at from the slot second, every other column missing), and always has is_root, delayed, entry_sec, depth (plus eta, the fitness of every node in
+    schedule order, when eta is given).
     """
     n_r, n_s = schedule.n_roots, schedule.n_slots
     n = n_r + n_s
@@ -825,36 +951,64 @@ def _sim_net(schedule, parent, child, rel, depth, fam_mask, fam_names, meta):
     frame["delayed"] = np.concatenate([schedule.root_delayed, np.zeros(n_s, bool)])
     frame["entry_sec"] = node_sec
     frame["depth"] = np.asarray(depth, np.int64)
+    if eta is not None:
+        frame["eta"] = np.asarray(eta, np.float64)
     return Net(ids, node_sec, parent, child, rel, frame, meta)
 
 
 def _pick(u, c, pool):
-    """Engine positions in [0, pool) for uniforms u: floor(u * pool) for equal weights (c is None), else inverse of the cumulative weights c."""
+    """Engine positions in [0, pool) for uniforms u: floor(u * pool) for equal weights (c is None), else inverse of the cumulative weights c.
+
+    The inverse is clipped to the last node with positive weight (the first position where c reaches c[-1]), so rounding at
+    u * c[-1] = c[-1] can never return a node of weight zero or a position outside the pool.
+    """
     if c is None:
         return np.minimum((u * pool).astype(np.int64), pool - 1)
-    return np.minimum(np.searchsorted(c, u * c[-1], side="right"), pool - 1)
+    return np.minimum(np.searchsorted(c, u * c[-1], side="right"), int(np.searchsorted(c, c[-1], side="left")))
 
 
-def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None):
+def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, step=SIM_STEP, seed=None):
     """Grow a seeded network on an arrival schedule and return it as a Net, the same class load_net returns (SIM-01, SIM-03).
 
-    Weights. A slot draws its parents with probability proportional to w_i = (k_i + a)^beta, where k_i is the node's current
-    number of children (D-11). Rules (D-11, D-32): "M0" uniform (beta = 0), "M1" Price (beta = 1), "M1p" (M1') needs beta,
-    rule=None is the general form and needs beta. "M2" and "M3" (fitness, aging) arrive with plan 04 and raise ValueError
-    until then. a must be > 0 and finite; weights that overflow float64 (beta very large) raise ValueError.
+    Weights. A slot draws its parents with probability proportional to w_i = eta_i (k_i + a)^beta A(dt_i), where k_i is the
+    node's current number of children and dt_i its age in days since it entered the pool (D-11, D-14); every factor is
+    optional (no eta: 1; beta = 0: no preferential attachment; no aging: 1). The named rules are shortcuts that check their
+    parameters and raise ValueError, naming the rule and the parameter, for any they do not take (D-11, D-32):
+
+        rule     beta              eta        aging
+        "M0"     0 (fixed)         refused    refused    uniform attachment
+        "M1"     1 (fixed)         refused    refused    Price: weight k + a
+        "M1p"    required          refused    refused    M1' with a free exponent
+        "M2"     1 (fixed)         required   refused    fitness: weight eta (k + a)
+        "M3"     1 (fixed)         required   required   M2 times aging
+        None     required          optional   optional   the general form; beta = 0 with eta is the fitness-only cell
+
+    a must be finite and > 0, beta finite. eta is a spec drawn per node in schedule order (roots first, then slots) from the
+    fitness stream rng_for(*labels, "eta"), which is separate from the attachment stream, so the same seed gives the same
+    eta at every step: ("lognormal", sigma) has median 1, ("exponential",) mean 1, ("empirical", values) resamples values;
+    or an explicit per-node array of finite numbers > 0 in the same order. The values are stored in nodes["eta"], the spec
+    (lists as tuples) or "array" in meta["eta"]. aging is a preset on dt in days: ("exp", tau) = exp(-dt/tau); ("power", nu)
+    = (1 + dt)^-nu; ("lognormal", mu, sigma) = exp(-(ln(1 + dt) - mu)^2 / (2 sigma^2)) / (1 + dt), the Wang-Song-Barabasi shape
+    on the clock 1 + dt; ("piecewise", edges_days, values) a step function (edges start at 0 and increase, values >= 0, not
+    all zero). Callables, strings and other objects are refused as eta or aging, so a run is reproducible from a parameter
+    file (D-13). The age is read at the first second of a batch (the undated batch uses the last dated second).
+
+    Numbers. Weights are float64. A weight, an aged weight or a cumulative total that is not finite raises ValueError
+    ("attachment weights overflow ..."); (k + a)^3 stays finite up to k about 1e100. A pool whose weights are all zero (aging
+    can do that) gives the slot no parent: the slot has depth 0 and is counted in n_m_capped and n_edges_short.
 
     Batches (D-05). The events are the entering roots and all slots, merged by (second, roots before slots, node index). A
     batch closes once its events reach step x the current pool (at least one event), is extended to the end of a timestamp
     group, and is never cut inside a second; dated events and undated slots never share a batch. The eligible pool of every
     arrival is the set of nodes that entered in an earlier second (strictly earlier, as in the estimator, P2 D-02), so nodes
     of the same second never parent each other and a node is never a parent inside its own batch. Degrees update after each
-    batch (plan 04 adds the aging clock, read at the batch start). step=0 forces one arrival per batch: the slots of a second
+    batch, and the aging clock is read at the batch's first second. step=0 forces one arrival per batch: the slots of a second
     then draw in schedule order, each seeing the degree updates of the earlier ones (never each other as parents). That is
     the reference mode for tests and small n; it runs one Python iteration per event, so it is slow at scale. step=SIM_STEP
     (1%) is provisional until rq2_growth/sim_convergence.py confirms it.
 
     Draw rules (nothing is silently dropped or added; every shortfall is counted in meta):
-      * A slot draws min(m, eligible) distinct parents (D-03). A capped slot counts in n_m_capped and its missing edges in
+      * A slot draws min(m, eligible with positive weight) distinct parents (D-03). A capped slot counts in n_m_capped and its missing edges in
         n_edges_short, so n_edges = schedule.slot_m.sum() - n_edges_short. The edges take the slot's first rel codes.
       * Random numbers (D-17): seed is a label tuple, an int or None (fixed default stream ("simulate", n_nodes)); the stream
         is rng_for(*labels). Every parent draw consumes one uniform, in slot order then parent position, drawn per batch in
@@ -871,7 +1025,7 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None)
     attributes; every other node is sim:NNNNNNN. A child takes author and is_swarm of its slot, families = the sorted
     semicolon-joined union of its parents' families (at most 62 distinct root families), created_at from its second, and the
     frame always has is_root, delayed, entry_sec (= node_sec) and depth (1 + the smallest parent depth, roots 0). meta has
-    source "sim", rule, a, beta, step, seed (the label tuple), numpy, schedule and the counters above plus n_batches.
+    source "sim", rule, a, beta, eta, aging, step, seed (the label tuple), numpy, schedule and the counters above plus n_batches.
 
     Age clock limitation (D-14) and the delayed flag. A simulated root's node_sec is its entry second, so load.pool_entry(sim)
     reports no delayed node, while nodes["delayed"] keeps the source root's real flag for stratifying. Entry seconds agree
@@ -879,14 +1033,16 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None)
     only labels a delayed root's bootstrap edge same_second_as_entry instead of delayed_first, and neither label is a hit.
     Undated parents look younger than they are, and in a simulation a delayed root's real first child no longer attaches to it.
     """
-    rule_name, a, beta = _check_sim_args(rule, a, beta, step)
+    rule_name, a, beta = _check_sim_args(rule, a, beta, eta, aging, step)
     if not isinstance(schedule, Schedule):
         raise TypeError("schedule must be a Schedule (arrivals_like(net) or synthetic_arrivals(n))")
     step = float(step)
+    aging = _check_aging(aging)
     labels = _seed_labels(seed, ("simulate", schedule.n_nodes))
     rng = rng_for(*labels)
     n_r, n_s = schedule.n_roots, schedule.n_slots
     n = n_r + n_s
+    eta_node, eta_meta = _eta_values(eta, n, rng_for(*labels, "eta"))
     fam_names, root_mask = _family_masks(schedule)
     mask = np.concatenate([root_mask, np.zeros(n_s, np.int64)])
     depth = np.zeros(n, np.int64)
@@ -897,6 +1053,8 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None)
     entering = np.flatnonzero(np.concatenate([schedule.root_sec != NO_TIME, np.ones(n_s, bool)]))
     eng = entering[np.lexsort((entering, is_slot[entering], node_sec[entering]))]  # engine position -> node index
     et, ek = node_sec[eng], is_slot[eng]
+    eta_ev = None if eta_node is None else eta_node[eng]  # fitness by engine position
+    uniform = beta == 0.0 and eta_ev is None and aging is None  # equal weights: floor(u * pool) instead of a cumulative-weight search
     n_events = len(eng)
     n_dated = int(np.searchsorted(et, NO_TIME, side="left"))
     first_group = int(np.searchsorted(et, et[0], side="right")) if n_events else 0
@@ -917,21 +1075,26 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None)
             top = n_dated if i < n_dated else n_events
             j = min(i + max(1, int(step * n_el)), top)
             j = int(np.searchsorted(et, et[j - 1], side="right"))  # never split a timestamp group
-        w0[i:j] = base  # entrants join with k = 0
+        w0[i:j] = base if eta_ev is None else eta_ev[i:j] * base  # entrants join with k = 0
         slots = i + np.flatnonzero(ek[i:j])
         if len(slots):
             boot = n_el == 0
             pool = first_roots if boot else n_el  # bootstrap: the roots that enter in the slots' own second
             slot_node = eng[slots]
             m_want = schedule.slot_m[slot_node - n_r]
-            m_eff = np.minimum(m_want, pool)
-            total = int(m_eff.sum())
-            if beta == 0.0:
-                c = None
+            if uniform:
+                c, n_pos = None, pool
             else:
-                c = np.cumsum(w0[:pool])
-                if not (np.isfinite(c[-1]) and c[-1] > 0):
-                    raise ValueError(f"the weights (k + a)^beta are not finite or all zero (a={a}, beta={beta}): use a smaller |beta|")
+                with np.errstate(over="ignore", invalid="ignore"):  # a non-finite weight is reported below as an overflow
+                    w = w0[:pool]
+                    if aging is not None:  # age in days at the batch's first second (undated batch: the last dated second)
+                        w = w * _aging_weights(aging, ((et[i] if i < n_dated else et[n_dated - 1]) - et[:pool]) / 86400.0)
+                    c = np.cumsum(w)
+                if not np.isfinite(c[-1]):
+                    raise ValueError(f"attachment weights overflow (a={a}, beta={beta}): a weight or the cumulative total is not finite; lower beta or a")
+                n_pos = int(np.count_nonzero(w))  # candidates with positive weight
+            m_eff = np.minimum(m_want, n_pos)
+            total = int(m_eff.sum())
             src = _pick(rng.random(total), c, pool)
             slot_of = np.repeat(np.arange(len(slots)), m_eff)  # slot (within the batch) of every draw, in draw order
             multi = np.flatnonzero(m_eff[slot_of] > 1)  # draws of slots with several parents
@@ -950,10 +1113,11 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None)
             who, cnt = np.unique(src, return_counts=True)
             deg[who] += cnt
             with np.errstate(over="ignore"):
-                w0[who] = (deg[who] + a) ** beta
+                w0[who] = (deg[who] + a) ** beta if eta_ev is None else eta_ev[who] * (deg[who] + a) ** beta
             child_of_draw, parent_of_draw = slot_node[slot_of], eng[src]
             low = np.full(len(slots), np.iinfo(np.int64).max)
             np.minimum.at(low, slot_of, depth[parent_of_draw])
+            low[low == np.iinfo(np.int64).max] = -1  # a slot with no parent has depth 0
             depth[slot_node] = low + 1
             np.bitwise_or.at(mask, child_of_draw, mask[parent_of_draw])
             parents.append(parent_of_draw)
@@ -969,11 +1133,12 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None)
     parent = np.concatenate(parents) if parents else empty
     child = np.concatenate(children) if children else empty
     rel = np.concatenate(rels) if rels else np.zeros(0, np.int8)
-    meta = {"source": "sim", "rule": rule_name, "a": a, "beta": beta, "step": step, "seed": labels, "numpy": np.__version__,
+    meta = {"source": "sim", "rule": rule_name, "a": a, "beta": beta, "eta": eta_meta, "aging": aging, "step": step, "seed": labels,
+            "numpy": np.__version__,
             "schedule": schedule.meta, "n_batches": n_batches, "n_bootstrap_edges": n_bootstrap, "n_m_capped": n_capped,
             "n_edges_short": n_short, "n_undated_slots": int((schedule.slot_sec == NO_TIME).sum()),
             "n_never_entering_roots": int((schedule.root_sec == NO_TIME).sum())}
-    return _sim_net(schedule, parent, child, rel, depth, mask, fam_names, meta)
+    return _sim_net(schedule, parent, child, rel, depth, mask, fam_names, meta, eta=eta_node)
 
 
 if __name__ == "__main__":
