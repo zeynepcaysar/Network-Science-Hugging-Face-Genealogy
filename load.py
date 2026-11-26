@@ -22,6 +22,8 @@ Works from any folder after `bash setup.sh` (which runs `pip install -e .`).
     save_table(df, "name", "rq2")            # results/rq2/name.csv with fixed bytes (UTF-8, LF, no index)
     use_style(); save_fig(fig, "name", "rq2")  # shared plot style; results/rq2/name.png
     rng = rng_for("rq1", i)                    # numpy Generator from labels (D-17); same labels, same stream
+    sched = arrivals_like(net)                 # arrival schedule of any Net (D-01, D-02)
+    sim = simulate(sched, rule="M1", seed=("rq2", i))   # seeded growth Net, same class as load_net's
 
 Node attributes: families (tuple, e.g. ("Llama",) or () outside the four families), generation
 (distance to the nearest family root in the version you loaded, None outside the families), created_at (pandas Timestamp, UTC,
@@ -80,6 +82,9 @@ VERSION_STYLES = {"full": "-", "no_swarm": "--", "quant_collapsed": ":"}  # one 
 USE_REASONS = ("used", "undated_child", "outside_window", "delayed_first", "same_second_as_entry")  # reason code of every edge (int8 = position); used = hit; precedence = the order of the checks in edge_use (D-05)
 CACHE_SCHEMA = "1"  # INFRA-01: part of the cache key; bump it when the cached table layout or the build in _tables_uncached changes
 SEED = 2026  # INFRA-06: base seed of every label stream; the same constant as checks/edge_check.py
+SIM_STEP = 0.01  # D-05, D-27: sub-batch step f, a batch closes once its arrivals reach f x the current pool; PROVISIONAL until rq2_growth/sim_convergence.py confirms it
+RULES = ("M0", "M1", "M1p", "M2", "M3")  # named attachment rules of simulate (M1p spells M1'); M2 and M3 need fitness and aging parameters
+RESOLUTIONS = ("exact", "month")  # time resolutions of arrivals_like: observed seconds, or seeded uniform draws inside each month
 
 
 def _read(name):
@@ -563,6 +568,316 @@ def edge_use_counts(codes):
     out.update({name: int(n) for name, n in zip(USE_REASONS, counts)})
     out["share_used"] = out["used"] / out["total"] if out["total"] else 0.0
     return out
+
+
+# ---------------------------------------------------------------- simulator
+class Schedule:
+    """Arrival schedule of a growth simulation: who enters the pool when, and what each arriving node carries.
+
+    Roots (root_sec, one entry second each; NO_TIME = never enters) are exogenous: they attach to nothing. Slots
+    (slot_sec, nondecreasing, NO_TIME last) are the nodes that attach: slot i takes slot_m[i] distinct parents. A slot keeps
+    only its second, its number of parents and its labels (author, is_swarm, rel codes), never which real node it attached
+    to, so a simulated attachment can never copy a real one (D-04). slot_rel holds slot_m.sum() rel codes (indices into
+    REL_CODES) in slot order, then parent order. root_ids, root_delayed and root_nodes (a DataFrame aligned to the roots) carry
+    the real roots' ids, delayed-entry flags and attributes when the schedule comes from a Net.
+    """
+
+    def __init__(self, root_sec, slot_sec, slot_m=None, *, root_ids=None, root_delayed=None, root_nodes=None,
+                 slot_rel=None, slot_author=None, slot_is_swarm=None, meta=None):
+        self.root_sec = np.asarray(root_sec, np.int64).reshape(-1)
+        self.slot_sec = np.asarray(slot_sec, np.int64).reshape(-1)
+        n_r, n_s = len(self.root_sec), len(self.slot_sec)
+        if n_r < 1:
+            raise ValueError("a schedule needs at least one root")
+        if (np.diff(self.slot_sec) < 0).any():
+            raise ValueError("slot_sec must be nondecreasing (undated slots, NO_TIME, last)")
+        self.slot_m = np.ones(n_s, np.int64) if slot_m is None else np.asarray(slot_m, np.int64).reshape(-1)
+        if len(self.slot_m) != n_s:
+            raise ValueError(f"slot_m has {len(self.slot_m)} entries for {n_s} slots")
+        if (self.slot_m < 1).any():
+            raise ValueError("every slot needs at least one parent (slot_m >= 1)")
+        total = int(self.slot_m.sum())
+        unknown = REL_CODES.index("unknown")
+        self.slot_rel = np.full(total, unknown, np.int8) if slot_rel is None else np.asarray(slot_rel, np.int8).reshape(-1)
+        if len(self.slot_rel) != total:
+            raise ValueError(f"slot_rel has {len(self.slot_rel)} codes for {total} parents (slot_m.sum())")
+        if total and (self.slot_rel.min() < 0 or self.slot_rel.max() >= len(REL_CODES)):
+            raise ValueError(f"slot_rel codes must be in [0, {len(REL_CODES)})")
+        self.root_delayed = np.zeros(n_r, bool) if root_delayed is None else np.asarray(root_delayed, bool).reshape(-1)
+        if len(self.root_delayed) != n_r:
+            raise ValueError(f"root_delayed has {len(self.root_delayed)} entries for {n_r} roots")
+        self.root_ids = None if root_ids is None else np.asarray(root_ids, dtype=object).reshape(-1)
+        if self.root_ids is not None and len(self.root_ids) != n_r:
+            raise ValueError(f"root_ids has {len(self.root_ids)} entries for {n_r} roots")
+        if root_nodes is not None and len(root_nodes) != n_r:
+            raise ValueError(f"root_nodes has {len(root_nodes)} rows for {n_r} roots")
+        self.root_nodes = None if root_nodes is None else root_nodes.reset_index(drop=True)
+        self.slot_author = None if slot_author is None else np.asarray(slot_author, dtype=object).reshape(-1)
+        if self.slot_author is not None and len(self.slot_author) != n_s:
+            raise ValueError(f"slot_author has {len(self.slot_author)} entries for {n_s} slots")
+        self.slot_is_swarm = None if slot_is_swarm is None else np.asarray(slot_is_swarm, bool).reshape(-1)
+        if self.slot_is_swarm is not None and len(self.slot_is_swarm) != n_s:
+            raise ValueError(f"slot_is_swarm has {len(self.slot_is_swarm)} entries for {n_s} slots")
+        entering = self.root_sec != NO_TIME
+        if n_s and not entering.any():
+            raise ValueError("slots need at least one root that enters the pool (every root_sec is NO_TIME)")
+        if n_s and self.slot_sec[0] != NO_TIME and self.slot_sec[0] < self.root_sec[entering].min():
+            raise ValueError("a dated slot is earlier than every entering root: nothing could be its parent")
+        self.meta = dict(meta or {})
+
+    @property
+    def n_roots(self):
+        return len(self.root_sec)
+
+    @property
+    def n_slots(self):
+        return len(self.slot_sec)
+
+    @property
+    def n_nodes(self):
+        return len(self.root_sec) + len(self.slot_sec)
+
+
+def synthetic_arrivals(n, *, n_roots=1, m=1):
+    """Schedule of n nodes: n_roots roots at second 0, then one slot per second (seconds 1 .. n - n_roots), each with m parents."""
+    if n_roots < 1 or n < n_roots or m < 1:
+        raise ValueError(f"need n >= n_roots >= 1 and m >= 1, got n={n}, n_roots={n_roots}, m={m}")
+    n_slots = n - n_roots
+    meta = {"source": "synthetic", "n": int(n), "n_roots": int(n_roots), "m": int(m)}
+    return Schedule(np.zeros(n_roots, np.int64), np.arange(1, n_slots + 1, dtype=np.int64),
+                    np.full(n_slots, m, np.int64), meta=meta)
+
+
+def _seed_labels(seed, default):
+    """Label tuple of a seed argument: None -> default, tuple or list -> tuple, anything else -> (seed,)."""
+    if seed is None:
+        return tuple(default)
+    if isinstance(seed, (tuple, list)):
+        return tuple(seed)
+    return (seed,)
+
+
+def arrivals_like(net, resolution="exact", seed=None):
+    """Arrival schedule of a loaded Net: every parentless node is a root, every other node one slot (D-01, D-02, D-03).
+
+    Roots enter at load.pool_entry's entry second (a delayed root, undated or created after its first child, enters at that
+    first child's second; delayed flag kept). Roots with no entry second never enter and stay isolated. Slots are the other
+    nodes in (second, node index) order, each with m = its number of parents and the real child's author, is_swarm and rel
+    codes in its edge order. Undated slots come last. resolution="exact" keeps the observed seconds.
+    """
+    if resolution not in RESOLUTIONS:
+        raise ValueError(f"resolution must be one of {RESOLUTIONS}")
+    if resolution != "exact":
+        raise NotImplementedError("resolution='month' is added with the real-data schedule rules")
+    n = net.n_nodes
+    indeg = np.bincount(net.child, minlength=n)
+    entry, delayed = pool_entry(net)
+    root = indeg == 0
+    roots = np.flatnonzero(root)
+    roots = roots[np.lexsort((roots, entry[roots]))]
+    slots = np.flatnonzero(~root)
+    slots = slots[np.lexsort((slots, net.node_sec[slots]))]
+    m = indeg[slots]
+    by_child = np.argsort(net.child, kind="stable")  # edge indices grouped by child, each child's edges in the net's edge order
+    start = np.concatenate([[0], np.cumsum(indeg)])[:-1]
+    first = np.repeat(start[slots], m)
+    within = np.arange(int(m.sum())) - np.repeat(np.concatenate([[0], np.cumsum(m)])[:-1], m)
+    rel = net.rel[by_child[first + within]]
+    nodes = net.nodes
+    author = nodes["author"].to_numpy(object)[slots] if nodes is not None and "author" in nodes.columns else None
+    swarm = nodes["is_swarm"].to_numpy(bool)[slots] if nodes is not None and "is_swarm" in nodes.columns else None
+    root_nodes = None if nodes is None else nodes.iloc[roots].reset_index(drop=True)
+    meta = {"net": {k: net.meta.get(k) for k in ("version", "aliases", "families", "source")}, "resolution": resolution,
+            "n_undated_slots": int((net.node_sec[slots] == NO_TIME).sum()), "n_never_entering_roots": int((entry[roots] == NO_TIME).sum())}
+    return Schedule(entry[roots], net.node_sec[slots], m, root_ids=net.ids[roots], root_delayed=delayed[roots],
+                    root_nodes=root_nodes, slot_rel=rel, slot_author=author, slot_is_swarm=swarm, meta=meta)
+
+
+def _check_sim_args(rule, a, beta, step):
+    """Validate simulate's rule, a, beta and step; return (rule name, a, beta) with the rule's fixed beta filled in."""
+    if rule is not None and rule not in RULES:
+        raise ValueError(f"rule must be one of {RULES} or None (general form with beta), not {rule!r}")
+    if rule in ("M2", "M3"):
+        raise ValueError(f"rule {rule} needs the fitness eta (and for M3 the aging) parameters that plan 04 of phase 3 adds; "
+                         f"use one of M0, M1, M1p or the general form with beta until then")
+    fixed = {"M0": 0.0, "M1": 1.0}
+    if rule in fixed:
+        if beta is not None and float(beta) != fixed[rule]:
+            raise ValueError(f"rule {rule} has beta = {fixed[rule]}: leave beta unset (or use the general form)")
+        beta = fixed[rule]
+    elif beta is None:
+        raise ValueError(f"{'rule ' + rule if rule else 'the general form'} needs beta")
+    a, beta, step = float(a), float(beta), float(step)
+    if not np.isfinite(beta):
+        raise ValueError(f"beta must be finite, got {beta}")
+    if not (np.isfinite(a) and a > 0):
+        raise ValueError(f"a must be finite and > 0, got {a}")
+    if not (np.isfinite(step) and 0.0 <= step <= 1.0):
+        raise ValueError(f"step must be in [0, 1] (0 = one arrival per batch), got {step}")
+    return rule or "general", a, beta
+
+
+def _family_masks(schedule):
+    """(sorted family names, int64 bit mask per root) from the roots' semicolon-joined families strings; no names without root_nodes."""
+    nodes = schedule.root_nodes
+    if nodes is None or "families" not in nodes.columns:
+        return [], np.zeros(schedule.n_roots, np.int64)
+    names = sorted({f for s in pd.unique(nodes["families"]) for f in str(s).split(";") if f})
+    if len(names) > 62:
+        raise ValueError(f"at most 62 distinct families fit the bit mask, got {len(names)}")
+    bit = {f: 1 << i for i, f in enumerate(names)}
+    code = {s: sum(bit[f] for f in str(s).split(";") if f) for s in pd.unique(nodes["families"])}
+    return names, nodes["families"].map(code).to_numpy(np.int64)
+
+
+def _missing_column(template, k):
+    """k missing values in the dtype of the Series template: False for bool, NaT for datetimes, "" for strings, NA for nullable numbers."""
+    dtype = template.dtype
+    if pd.api.types.is_bool_dtype(dtype):
+        return pd.Series(np.zeros(k, bool), dtype=dtype)
+    if pd.api.types.is_datetime64_any_dtype(dtype):
+        return pd.Series([pd.NaT] * k, dtype=dtype)
+    if pd.api.types.is_string_dtype(dtype):
+        return pd.Series([""] * k, dtype=dtype)
+    if isinstance(dtype, pd.api.extensions.ExtensionDtype):
+        return pd.Series(pd.array([pd.NA] * k, dtype=dtype))
+    return pd.Series(np.full(k, np.nan), dtype=float)
+
+
+def _created_at(sec):
+    """UTC timestamps (a Series) of epoch seconds; NO_TIME -> NaT."""
+    sec = np.asarray(sec, np.int64)
+    dated = sec != NO_TIME
+    return pd.Series(pd.to_datetime(np.where(dated, sec, 0), unit="s", utc=True)).mask(~dated)
+
+
+def _sim_net(schedule, parent, child, rel, depth, fam_mask, fam_names, meta):
+    """Build a simulated Net from schedule order arrays (node indices: roots first, then slots), through the Net constructor.
+
+    Ids are the real root ids where the schedule has them, else sim:NNNNNNN (zero-padded schedule position, wider from 10**7
+    nodes). The nodes frame is the roots' real rows plus one row per slot (author and is_swarm from the slot, families from
+    fam_mask, created_at from the slot second, every other column missing), and always has is_root, delayed, entry_sec, depth.
+    """
+    n_r, n_s = schedule.n_roots, schedule.n_slots
+    n = n_r + n_s
+    width = max(7, len(str(n - 1)))
+    ids = np.array([f"sim:{p:0{width}d}" for p in range(n)], dtype=object)
+    if schedule.root_ids is not None:
+        ids[:n_r] = schedule.root_ids
+    node_sec = np.concatenate([schedule.root_sec, schedule.slot_sec])
+    uniq, inverse = np.unique(fam_mask, return_inverse=True)
+    names = np.array([";".join(f for b, f in enumerate(fam_names) if (int(x) >> b) & 1) for x in uniq], dtype=object)
+    families = names[inverse]
+    roots = schedule.root_nodes
+    if roots is not None:
+        frame = pd.concat([roots, pd.DataFrame({c: _missing_column(roots[c], n_s) for c in roots.columns})], ignore_index=True)
+        if "families" in roots.columns:
+            families[:n_r] = roots["families"].to_numpy(object)
+    else:
+        frame = pd.DataFrame(index=range(n))
+    root_author = roots["author"].to_numpy(object) if roots is not None and "author" in roots.columns else np.full(n_r, "", object)
+    root_swarm = roots["is_swarm"].to_numpy(bool) if roots is not None and "is_swarm" in roots.columns else np.zeros(n_r, bool)
+    slot_author = schedule.slot_author if schedule.slot_author is not None else np.full(n_s, "", object)
+    slot_swarm = schedule.slot_is_swarm if schedule.slot_is_swarm is not None else np.zeros(n_s, bool)
+    created = _created_at(node_sec)
+    if roots is not None and "created_at" in roots.columns:
+        created = pd.concat([roots["created_at"], created.iloc[n_r:].astype(roots["created_at"].dtype)], ignore_index=True)
+    frame["id"] = pd.Series(ids, dtype="str")
+    frame["families"] = pd.Series(families, dtype="str")
+    frame["author"] = pd.Series(np.concatenate([root_author, slot_author]), dtype="str")
+    frame["is_swarm"] = np.concatenate([root_swarm, slot_swarm])
+    frame["created_at"] = created
+    frame["is_root"] = np.arange(n) < n_r
+    frame["delayed"] = np.concatenate([schedule.root_delayed, np.zeros(n_s, bool)])
+    frame["entry_sec"] = node_sec
+    frame["depth"] = np.asarray(depth, np.int64)
+    return Net(ids, node_sec, parent, child, rel, frame, meta)
+
+
+def simulate(schedule, rule=None, *, a=1.0, beta=None, step=SIM_STEP, seed=None):
+    """Grow a seeded network on an arrival schedule and return it as a Net (the same class load_net returns).
+
+    Each slot draws min(m, eligible) distinct parents with probability proportional to the weight w_i = (k_i + a)^beta, where
+    k_i is the node's current number of children. Rules (D-11, D-32): "M0" uniform (beta = 0), "M1" Price (beta = 1),
+    "M1p" (M1') needs beta, rule=None is the general form and needs beta. M2 and M3 (fitness, aging) arrive with plan 04.
+
+    Batches (D-05): a batch closes once its arrivals reach step x the current pool (at least one arrival, extended to the end
+    of a timestamp group, never cutting between same-second events). The eligible pool of every arrival is the set of nodes
+    that entered in an earlier second, so a node is never a parent inside its own batch or its own second. step=0 forces one
+    arrival per batch (the reference mode for tests and small n; one Python iteration per event, so it is slow at scale).
+    Degrees update after each batch.
+
+    Random numbers (D-17): seed is a label tuple (or an int, or None for the default stream); the stream is rng_for(*labels).
+    Every parent draw consumes exactly one uniform, in slot order then parent position, so batchings with the same seed
+    consume the same numbers.
+    """
+    rule_name, a, beta = _check_sim_args(rule, a, beta, step)
+    if not isinstance(schedule, Schedule):
+        raise TypeError("schedule must be a Schedule (arrivals_like(net) or synthetic_arrivals(n))")
+    step = float(step)
+    labels = _seed_labels(seed, ("simulate", schedule.n_nodes))
+    rng = rng_for(*labels)
+    n_r, n_s = schedule.n_roots, schedule.n_slots
+    n = n_r + n_s
+    fam_names, root_mask = _family_masks(schedule)
+    mask = np.concatenate([root_mask, np.zeros(n_s, np.int64)])
+    depth = np.zeros(n, np.int64)
+    if (schedule.slot_m > 1).any():
+        raise ValueError("multi-parent slots are not supported yet")
+
+    # merged event stream: entering roots and all slots, sorted by (second, roots before slots, node index)
+    node_sec = np.concatenate([schedule.root_sec, schedule.slot_sec])
+    is_slot = np.arange(n) >= n_r
+    entering = np.flatnonzero(np.concatenate([schedule.root_sec != NO_TIME, np.ones(n_s, bool)]))
+    eng = entering[np.lexsort((entering, is_slot[entering], node_sec[entering]))]  # engine position -> node index
+    et, ek = node_sec[eng], is_slot[eng]
+    n_events = len(eng)
+    n_dated = int(np.searchsorted(et, NO_TIME, side="left"))
+    offset = np.concatenate([[0], np.cumsum(schedule.slot_m)])[:-1]
+    deg = np.zeros(n_events, np.int64)
+    w0 = np.zeros(n_events, np.float64)  # base weight (k + a)^beta of the events, updated for changed parents only
+    base = a ** beta
+    parents, children, rels = [], [], []
+    n_batches, i = 0, 0
+    while i < n_events:
+        n_el = int(np.searchsorted(et, et[i], side="left"))  # events strictly earlier than this one: the eligible pool
+        if step == 0.0:
+            j = i + 1
+        else:
+            top = n_dated if i < n_dated else n_events
+            j = min(i + max(1, int(step * n_el)), top)
+            j = int(np.searchsorted(et, et[j - 1], side="right"))  # never split a timestamp group
+        w0[i:j] = base  # entrants join with k = 0
+        slots = i + np.flatnonzero(ek[i:j])
+        if len(slots):
+            if n_el == 0:
+                raise ValueError("empty pool for the first slots")
+            u = rng.random(len(slots))
+            if beta == 0.0:
+                src = np.minimum((u * n_el).astype(np.int64), n_el - 1)
+            else:
+                c = np.cumsum(w0[:n_el])
+                src = np.minimum(np.searchsorted(c, u * c[-1], side="right"), n_el - 1)
+            who, cnt = np.unique(src, return_counts=True)
+            deg[who] += cnt
+            w0[who] = (deg[who] + a) ** beta
+            child_node, parent_node = eng[slots], eng[src]
+            depth[child_node] = depth[parent_node] + 1
+            mask[child_node] |= mask[parent_node]
+            parents.append(parent_node)
+            children.append(child_node)
+            rels.append(schedule.slot_rel[offset[child_node - n_r]])
+        n_batches += 1
+        i = j
+    empty = np.zeros(0, np.int64)
+    parent = np.concatenate(parents) if parents else empty
+    child = np.concatenate(children) if children else empty
+    rel = np.concatenate(rels) if rels else np.zeros(0, np.int8)
+    meta = {"source": "sim", "rule": rule_name, "a": a, "beta": beta, "step": step, "seed": labels, "numpy": np.__version__,
+            "schedule": schedule.meta, "n_batches": n_batches, "n_bootstrap_edges": 0, "n_m_capped": 0, "n_edges_short": 0,
+            "n_undated_slots": int((schedule.slot_sec == NO_TIME).sum()),
+            "n_never_entering_roots": int((schedule.root_sec == NO_TIME).sum())}
+    return _sim_net(schedule, parent, child, rel, depth, mask, fam_names, meta)
 
 
 if __name__ == "__main__":
