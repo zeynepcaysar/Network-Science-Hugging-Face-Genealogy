@@ -234,6 +234,7 @@ def test_reference_identical_zero_weights():
 AGREE_KEYS = ("leaf_share", "top10_share", "kmax_over_n", "mean_depth")
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("rule", ["M0", "M1"])
 def test_ensemble_agreement_default_step(rule):
     import load
