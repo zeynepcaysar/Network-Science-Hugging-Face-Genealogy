@@ -14,6 +14,9 @@ What each group proves:
     much as M2 (an evaluation-count guard; power and the other kinds keep the per-batch path). An exp-aged pool whose newest
     eligible node has positive base weight always has a positive weight, because that node's factor is at least 1, so underflow of
     older candidates cannot empty it (D-35); a base weight of 0 stays a true zero;
+  * distinct parents (D-37): the redraw cap MAX_REDRAWS is unchanged, and positions still duplicated after it take an exact
+    draw by weight among the positive-weight candidates minus the slot's held parents (counted in n_fallback_slots); the
+    streams of runs that finish within the cap are pinned by digests recorded before the fallback existed;
   * overflow: beta = 3 at n = 10,000 runs, beta = 200 raises a ValueError that says overflow (T-03-16).
 
 Seeds come only through load.rng_for or explicit label tuples; nothing here uses the global numpy random state. Load
@@ -293,6 +296,144 @@ def test_exp_rebase_boundary():
     assert sim.n_edges == 0 and sim.meta["n_aging_rebases"] == 0  # no slots, no draws, no factors
     sim = load.simulate(load.synthetic_arrivals(60), rule="M1", seed=("exp-edge", 4))
     assert sim.meta["n_aging_rebases"] == 0  # the key is there without aging too
+
+
+# ---------------------------------------------------------------- distinct parents: exact fallback after MAX_REDRAWS rounds (D-37)
+# recorded from load.py at ae62caa (main before plan 03-09), numpy 2.5.5: arrays_digest of the runs of PIN_CASES on
+# synthetic_arrivals(3000, m=3) with seed ("pin", name, step). Only M0 and M1 with beta = 1 are pinned: their draws use only
+# deterministic IEEE basic operations (k + a, the products u * pool and u * c[-1], the floor mapping), a sequential cumsum
+# and numpy's exponent-1.0 path, so the digests agree on every OS (a determinism argument, not a claim of exact arithmetic).
+# Rules with pow, exp or random-variate transforms are compared with the pre-change engine in plan 03-09's one-off check.
+PIN_CASES = {"M0-m3": {"rule": "M0"}, "M1-m3": {"rule": "M1", "a": 1.0}, "M1-a0.1-m3": {"rule": "M1", "a": 0.1}}
+PINNED_DIGESTS = {
+    ("M0-m3", 0.01): "084d5823f7392243", ("M0-m3", 0.0): "b045d796435fb483",
+    ("M1-m3", 0.01): "582423cabbbb6bce", ("M1-m3", 0.0): "8ec7e32530579262",
+    ("M1-a0.1-m3", 0.01): "afb89692800d75b6", ("M1-a0.1-m3", 0.0): "1bb3b992920bbe47",
+}
+
+
+def test_multi_parent_tiny_a_runs():
+    """The verification's failing call (CR-01): a = 1e-6 concentrates the weights, and every slot still gets its distinct parents."""
+    import load
+    sim = load.simulate(load.synthetic_arrivals(1000, m=3), rule="M1", a=1e-6)
+    assert sim.n_edges == 2994
+    assert sim.meta["n_edges_short"] == 3 and sim.meta["n_m_capped"] == 2
+    assert sim.meta["n_fallback_slots"] >= 1  # planning prototype: 2
+    assert np.array_equal(np.bincount(sim.child - 1, minlength=999), np.minimum(3, np.arange(1, 1000)))  # min(m, eligible) per slot
+    assert len(np.unique(sim.parent * sim.n_nodes + sim.child)) == sim.n_edges  # no (parent, child) pair twice
+
+
+def test_redraw_cap_boundary(monkeypatch):
+    """A slot that needs exactly R redraw rounds: cap R draws as before, cap R - 1 hands it to the fallback (one step either side)."""
+    import load
+    from sim_helpers import arrays_digest
+    sched = load.Schedule([0] * 5, [1], [2])
+    eta = np.array([100.0, 1, 1, 1, 1, 1])
+    real = load._pick
+    calls = []
+
+    def counting(u, c, pool):
+        calls.append(len(u))
+        return real(u, c, pool)
+
+    monkeypatch.setattr(load, "_pick", counting)
+    found = None
+    for i in range(1, 51):
+        calls.clear()
+        sim = load.simulate(sched, beta=0.0, eta=eta, seed=("cap-edge", i))
+        if len(calls) - 1 >= 2:  # one initial call plus one per redraw round
+            found = (i, len(calls) - 1, sim)
+            break
+    assert found is not None
+    i, rounds, sim = found  # planning prototype: i = 1, R = 7
+    assert sim.meta["n_fallback_slots"] == 0
+    monkeypatch.setattr(load, "_pick", real)
+    monkeypatch.setattr(load, "MAX_REDRAWS", rounds)
+    at_cap = load.simulate(sched, beta=0.0, eta=eta, seed=("cap-edge", i))
+    assert arrays_digest(at_cap) == arrays_digest(sim) and at_cap.meta["n_fallback_slots"] == 0
+    monkeypatch.setattr(load, "MAX_REDRAWS", rounds - 1)
+    below = load.simulate(sched, beta=0.0, eta=eta, seed=("cap-edge", i))
+    assert below.meta["n_fallback_slots"] == 1
+    assert len(set(below.parent.tolist())) == 2 and below.n_edges == 2
+
+
+def test_fallback_law_by_weight(monkeypatch):
+    """The fallback draws the limit of redrawing forever: heavy root 0 plus light root j with probability j / 10."""
+    import load
+    # The law does not depend on the cap: with a per-round light probability of 1e-8 the default cap reaches the fallback too.
+    # The cap is forced to 0 only to save 1000 redraw rounds per run.
+    monkeypatch.setattr(load, "MAX_REDRAWS", 0)
+    sched = load.Schedule([0] * 5, [1], [2])
+    eta = np.array([1e9, 1.0, 2.0, 3.0, 4.0, 1.0])
+    count = np.zeros(5)
+    runs = 1000
+    for i in range(1, runs + 1):
+        sim = load.simulate(sched, beta=0.0, eta=eta, seed=("fallback-law", i))
+        assert sim.meta["n_fallback_slots"] == 1
+        parents = sim.parent.tolist()
+        assert 0 in parents and len(set(parents)) == 2
+        count[[p for p in parents if p != 0][0]] += 1
+    for j in range(1, 5):
+        p = j / 10
+        assert abs(count[j] / runs - p) <= 4 * np.sqrt(p * (1 - p) / runs), (j, count[j] / runs)  # prototype: 0.117, 0.185, 0.291, 0.407
+
+
+def test_fallback_draws_below_float_resolution():
+    """Candidates that weigh less than the float resolution of the cumulative total are drawn exactly by the masked rebuild."""
+    import load
+    # The cumulative total is 1e20 at every position, so no uniform can reach a light root in the redraw rounds;
+    # the fallback rebuilds the cumulative weights on a masked copy and reaches them exactly.
+    sim = load.simulate(load.Schedule([0] * 4, [1], [2]), beta=0.0, eta=np.array([1e20, 1, 1, 1, 1.0]), seed=("below-ulp", 1))
+    parents = sim.parent.tolist()
+    assert len(set(parents)) == 2 and 0 in parents and set(parents) - {0} <= {1, 2, 3}
+    assert sim.meta["n_fallback_slots"] == 1
+
+
+def test_fallback_respects_zero_weights_and_the_cap():
+    """Zero-weight candidates are never drawn by the fallback and min(m, positive-weight candidates) still caps."""
+    import load
+    for m in (3, 4):
+        # root 0 is 2 days old at the slot, so its piecewise aging weight is 0; roots 1 (heavy), 2 and 3 (light) are 10 seconds old
+        sched = load.Schedule([0, 2 * DAY - 10, 2 * DAY - 10, 2 * DAY - 10], [2 * DAY], [m])
+        eta = np.array([1.0, 1e20, 1, 1, 1])
+        sim = load.simulate(sched, beta=0.0, eta=eta, aging=("piecewise", (0, 1), (1.0, 0.0)), seed=("zero-cap", m))
+        assert set(sim.parent.tolist()) == {1, 2, 3} and sim.n_edges == 3
+        assert sim.meta["n_fallback_slots"] == 1
+        assert sim.meta["n_m_capped"] == (0 if m == 3 else 1) and sim.meta["n_edges_short"] == (0 if m == 3 else 1)
+
+
+def test_fallback_finishes_two_slots_of_one_batch():
+    """Two stuck slots of one second (one batch) are finished by one fallback call in draw order, each with distinct parents."""
+    import load
+    sim = load.simulate(load.Schedule([0] * 4, [1, 1], [2, 2]), beta=0.0, eta=np.array([1e20, 1, 1, 1, 1, 1.0]), seed=("two-stuck", 1))
+    assert sim.meta["n_fallback_slots"] == 2
+    for child in (4, 5):
+        parents = sim.parent[sim.child == child].tolist()
+        assert len(parents) == 2 and len(set(parents)) == 2 and 0 in parents
+
+
+def test_streams_pinned_where_redraws_finish(monkeypatch):
+    """Runs that finish within the cap draw exactly as before the fallback existed (D-37, D-17): digests recorded at ae62caa."""
+    import load
+    from sim_helpers import arrays_digest
+    sched = load.synthetic_arrivals(3000, m=3)
+    real = load._pick
+    redraws = {name: 0 for name in PIN_CASES}  # uniforms passed to _pick per case
+    current = [None]
+
+    def counting(u, c, pool):
+        redraws[current[0]] += len(u)
+        return real(u, c, pool)
+
+    monkeypatch.setattr(load, "_pick", counting)
+    for name, kwargs in PIN_CASES.items():
+        for step in (0.01, 0.0):
+            current[0] = name
+            sim = load.simulate(sched, step=step, seed=("pin", name, step), **kwargs)
+            redraws[name] -= sim.n_edges  # what is left are the uniforms of the redraw rounds
+            assert sim.meta.get("n_fallback_slots", 0) == 0
+            assert arrays_digest(sim) == PINNED_DIGESTS[(name, step)], (name, step)
+    assert redraws["M1-a0.1-m3"] > 1000  # planning prototype: 1,856 + 1,480, so the pins cover the redraw loop
 
 
 # ---------------------------------------------------------------- overflow

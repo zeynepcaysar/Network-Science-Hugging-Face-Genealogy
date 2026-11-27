@@ -57,6 +57,7 @@ Tables and figures written through save_table and save_fig are byte-identical wh
 Table cache: when DATA/MANIFEST.txt exists, load_tables() caches the final tables of each (version, aliases) in DATA/.cache/
 (parquet, keyed on the MANIFEST md5 entries, CACHE_SCHEMA and the pandas major version; rebuilt when stale or damaged, the output
 never changes). HFG_CACHE=off (read at each call, empty counts as unset) bypasses it; deleting the folder resets it.
+A cache that cannot be read or written (any error, or pyarrow missing) gives the uncached tables and a note: line.
 """
 import hashlib, re, sys
 import os
@@ -92,7 +93,7 @@ SEED = 2026  # INFRA-06: base seed of every label stream; the same constant as c
 SIM_STEP = 0.000625  # D-05, D-27: sub-batch step f, a batch closes once its arrivals reach f x the current pool; confirmed by rq2_growth/sim_convergence.py on the full arrival profile (results on the rq2-growth branch); Phase 8 re-checks it under measured parameters
 RULES = ("M0", "M1", "M1p", "M2", "M3")  # named attachment rules of simulate (M1p spells M1'); M2 and M3 need fitness and aging parameters
 RESOLUTIONS = ("exact", "month")  # time resolutions of arrivals_like: observed seconds, or seeded uniform draws inside each month
-MAX_REDRAWS = 1000  # simulate: rounds of redrawing duplicate parents of one slot before it gives up (reached only with absurdly concentrated weights)
+MAX_REDRAWS = 1000  # simulate: redraw rounds per batch for duplicate parents; positions still duplicated after them are finished by an exact draw without replacement (D-37), so every run that finishes within the cap keeps its stream. Reached on the real profile when a slot wants more distinct parents than it has heavy candidates (a tiny a, beta >= 1.5, broad fitness)
 ETA_KINDS = ("lognormal", "exponential", "empirical")  # fitness specs of simulate: ("lognormal", sigma), ("exponential",), ("empirical", values); or a per-node array (D-12)
 AGING_KINDS = ("exp", "power", "lognormal", "piecewise")  # aging presets of simulate, dt in days since pool entry; plain tuples only, never callables (D-13)
 EXP_REBASE = 32.0  # D-34: simulate moves the reference second of exponential aging to the newest eligible node when that node's factor would pass exp(32), about 8e13, so no factor overflows for any tau > 0
@@ -109,6 +110,7 @@ def load_tables(version="full", aliases=False, families=None):
     """Return (nodes, edges) DataFrames for one network version."""
     if version not in VERSIONS:
         raise ValueError(f"version must be one of {VERSIONS}")
+    aliases = bool(aliases)  # WR-02, D-38: every value acts as `if aliases:` did before the cache; the cache key digit is 0 or 1
     cached = _cached_tables(version, aliases, families)
     if cached is not None:
         return cached
@@ -181,7 +183,7 @@ def verify_data(data_dir=None):
     for want, _, name in entries:
         posix, windows = PurePosixPath(name), PureWindowsPath(name)
         target = None
-        if not (posix.is_absolute() or windows.is_absolute() or windows.drive or windows.root
+        if posix.parts and not (posix.is_absolute() or windows.is_absolute() or windows.drive or windows.root
                 or ".." in posix.parts or ".." in windows.parts):
             parts = posix.parts
             target = data.joinpath(*parts[1:]) if parts[0] == "data" else root.joinpath(*parts)
@@ -241,7 +243,7 @@ def _cache_key(digests):
 
 def _cache_paths(data, version, aliases, key):
     """(nodes file, edges file) of one (version, aliases) pair under data/.cache/."""
-    stem = data / ".cache" / f"tables_{version}_{int(aliases)}_{key}"
+    stem = data / ".cache" / f"tables_{version}_{int(bool(aliases))}_{key}"
     return stem.with_name(stem.name + ".nodes.parquet"), stem.with_name(stem.name + ".edges.parquet")
 
 
@@ -283,8 +285,8 @@ def _write_parquet(frame, path, key):
 
 def _read_parquet(path, key):
     """The frame in path, or None when the file is missing, unreadable, or its key, name or row count does not match."""
-    import pyarrow.parquet as pq
     try:
+        import pyarrow.parquet as pq
         table = pq.read_table(path)
         meta = table.schema.metadata or {}
         if (meta.get(b"hfg_key") != key.encode() or meta.get(b"hfg_name") != path.name.encode()
@@ -315,6 +317,11 @@ def _cached_tables(version, aliases, families):
     """The final tables from DATA/.cache/, built and written on first use; None means no cache (off, no MANIFEST, md5 mismatch)."""
     if _cache_off():
         return None
+    try:
+        import pyarrow.compute, pyarrow.parquet  # WR-03, D-38: a missing pyarrow gives the fully uncached path
+    except ImportError as e:
+        print(f"note: cannot write the table cache in {DATA / '.cache'} ({e}) - tables built from the CSVs")
+        return None
     digests = _manifest_digests(DATA)
     if digests is None or not all((DATA / n).is_file() for n in _REQUIRED):
         return None
@@ -331,10 +338,10 @@ def _cached_tables(version, aliases, families):
             nodes_path.parent.mkdir(exist_ok=True)
             _write_parquet(nodes, nodes_path, key)
             _write_parquet(edges, edges_path, key)
-        except OSError as e:
+        except Exception as e:  # WR-03, D-38: any write failure (OSError, pyarrow ArrowInvalid or ArrowTypeError, ...) gives the uncached tables
             print(f"note: cannot write the table cache in {nodes_path.parent} ({e}) - tables built from the CSVs")
         else:
-            for old in nodes_path.parent.glob(f"tables_{version}_{int(aliases)}_*.parquet"):  # files of an older key; best effort
+            for old in nodes_path.parent.glob(f"tables_{version}_{int(bool(aliases))}_*.parquet"):  # files of an older key; best effort
                 if old not in (nodes_path, edges_path):
                     try:
                         old.unlink()
@@ -984,6 +991,20 @@ def _pick(u, c, pool):
     return np.minimum(np.searchsorted(c, u * c[-1], side="right"), int(np.searchsorted(c, c[-1], side="left")))
 
 
+def _finish_distinct(src, redo, slot_of, w, pool, u):
+    """Finish the positions still duplicated after MAX_REDRAWS rounds by an exact draw without replacement (D-37), in draw order, one uniform each.
+
+    Each position r of redo takes the next uniform of u on the cumulative weights of its slot's candidates with the parents the slot
+    holds set to 0 (equal weights 1.0 when w is None): the limit of redrawing r forever. The mask goes into a fresh array (w is a view of the
+    batch weights), and the cumulative sum is rebuilt on it, so candidates below the float resolution of the full total stay drawable.
+    """
+    for j, r in enumerate(redo):
+        lo, hi = np.searchsorted(slot_of, slot_of[r], side="left"), np.searchsorted(slot_of, slot_of[r], side="right")  # the slot's block
+        masked = np.ones(pool) if w is None else np.array(w, dtype=np.float64)
+        masked[src[lo:hi]] = 0.0
+        src[r] = _pick(u[j:j + 1], np.cumsum(masked), pool)[0]
+
+
 def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, step=SIM_STEP, seed=None):
     """Grow a seeded network on an arrival schedule and return it as a Net, the same class load_net returns (SIM-01, SIM-03).
 
@@ -1045,7 +1066,11 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
         is rng_for(*labels). Every parent draw consumes one uniform, in slot order then parent position, drawn per batch in
         one call; M0 maps u to floor(u * eligible), the other weights to the inverse of the cumulative weights, so batchings
         with the same seed use the same numbers. A duplicate inside one slot (later occurrence) is redrawn, one uniform per
-        duplicated entry in draw order, round after round until none remains.
+        duplicated entry in draw order, for at most MAX_REDRAWS rounds per batch. A position still duplicated then is finished by an
+        exact draw without replacement (D-37): in draw order, one uniform each (one rng.random call), by the weights of the slot's
+        positive-weight candidates with the parents it already holds removed, which is the limit of redrawing it forever. Such slots
+        are counted in n_fallback_slots. A run that finishes within the cap draws exactly as before; the fallback is reached when a
+        slot wants more distinct parents than it has heavy candidates.
       * Bootstrap: a slot whose strictly-earlier pool is empty (the first second with slots, e.g. a delayed root and its
         first child in one second) attaches among the roots that enter in its own second; those edges are counted in
         n_bootstrap_edges, and every other edge has entry[parent] strictly before the child's second.
@@ -1056,7 +1081,7 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
     attributes; every other node is sim:NNNNNNN. A child takes author and is_swarm of its slot, families = the sorted
     semicolon-joined union of its parents' families (at most 62 distinct root families), created_at from its second, and the
     frame always has is_root, delayed, entry_sec (= node_sec) and depth (1 + the smallest parent depth, roots 0). meta has
-    source "sim", rule, a, beta, eta, aging, step, seed (the label tuple), numpy, schedule and the counters above plus n_batches and n_aging_rebases (0 without exponential aging).
+    source "sim", rule, a, beta, eta, aging, step, seed (the label tuple), numpy, schedule and the counters above plus n_batches, n_fallback_slots (0 when no slot reached the cap) and n_aging_rebases (0 without exponential aging).
 
     Age clock limitation (D-14) and the delayed flag. A simulated root's node_sec is its entry second, so load.pool_entry(sim)
     reports no delayed node, while nodes["delayed"] keeps the source root's real flag for stratifying. Entry seconds agree
@@ -1102,6 +1127,7 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
         base = float(np.float64(a) ** beta)
     parents, children, rels = [], [], []
     n_batches = n_bootstrap = n_capped = n_short = 0
+    n_fallback = 0  # slots finished by the exact fallback after MAX_REDRAWS rounds (D-37)
     i = 0
     while i < n_events:
         n_el = int(np.searchsorted(et, et[i], side="left"))  # events strictly earlier than this one: the eligible pool
@@ -1153,7 +1179,9 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
                     break
                 rounds += 1
                 if rounds > MAX_REDRAWS:
-                    raise RuntimeError(f"could not draw distinct parents after {MAX_REDRAWS} redraw rounds: the weights are too concentrated")
+                    _finish_distinct(src, redo, slot_of, None if uniform else w, pool, rng.random(len(redo)))
+                    n_fallback += int(len(np.unique(slot_of[redo])))
+                    break
                 src[redo] = _pick(rng.random(len(redo)), c, pool)
             who, cnt = np.unique(src, return_counts=True)
             deg[who] += cnt
@@ -1184,7 +1212,7 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
     meta = {"source": "sim", "rule": rule_name, "a": a, "beta": beta, "eta": eta_meta, "aging": aging, "step": step, "seed": labels,
             "numpy": np.__version__,
             "schedule": schedule.meta, "n_batches": n_batches, "n_bootstrap_edges": n_bootstrap, "n_m_capped": n_capped,
-            "n_edges_short": n_short, "n_aging_rebases": n_rebases, "n_undated_slots": int((schedule.slot_sec == NO_TIME).sum()),
+            "n_edges_short": n_short, "n_fallback_slots": n_fallback, "n_aging_rebases": n_rebases, "n_undated_slots": int((schedule.slot_sec == NO_TIME).sum()),
             "n_never_entering_roots": int((schedule.root_sec == NO_TIME).sum())}
     return _sim_net(schedule, parent, child, rel, depth, mask, fam_names, meta, eta=eta_node)
 
