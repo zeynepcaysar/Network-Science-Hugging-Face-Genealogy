@@ -10,6 +10,10 @@ What each group proves:
     when eta is one;
   * aging: exact values of the four presets, aging to zero keeps a slot off an old node, a pool with no positive weight gives
     the slot no parent (counted), and the meta records the specs;
+  * exponential aging is factorised (D-34): each node's factor is computed once and rebased at EXP_REBASE, so M3 costs about as
+    much as M2 (an evaluation-count guard; power and the other kinds keep the per-batch path). An exp-aged pool whose newest
+    eligible node has positive base weight always has a positive weight, because that node's factor is at least 1, so underflow of
+    older candidates cannot empty it (D-35); a base weight of 0 stays a true zero;
   * overflow: beta = 3 at n = 10,000 runs, beta = 200 raises a ValueError that says overflow (T-03-16).
 
 Seeds come only through load.rng_for or explicit label tuples; nothing here uses the global numpy random state. Load
@@ -217,6 +221,78 @@ def test_aging_zero_weights_cap_the_parent_count():
     sim = load.simulate(sched, rule="M3", eta=np.ones(6), aging=aging, seed=("cap", 1))
     assert sorted(sim.parent.tolist()) == [3, 4]
     assert sim.meta["n_m_capped"] == 1 and sim.meta["n_edges_short"] == 1
+
+
+# ---------------------------------------------------------------- exp aging factorised (D-34)
+def test_exp_aging_is_factorised(monkeypatch):
+    """Exp aging evaluates each node's factor once (through _exp_aging_factors), never per batch through _aging_weights (D-34)."""
+    import load
+    from sim_helpers import bursty_schedule
+    sched = bursty_schedule(3000)
+    n_events = int(np.count_nonzero(sched.root_sec != load.NO_TIME)) + sched.n_slots  # the engine's events: entering roots and slots
+    counts = {"aging": 0, "factors": 0}
+    real_aging, real_factors = load._aging_weights, getattr(load, "_exp_aging_factors", None)
+
+    def count_aging(spec, dt_days):
+        counts["aging"] += np.size(dt_days)
+        return real_aging(spec, dt_days)
+
+    def count_factors(sec, ref_sec, tau_days):
+        counts["factors"] += np.size(sec)
+        return real_factors(sec, ref_sec, tau_days)
+
+    monkeypatch.setattr(load, "_aging_weights", count_aging)
+    monkeypatch.setattr(load, "_exp_aging_factors", count_factors, raising=False)
+    sim = load.simulate(sched, rule="M3", a=1.0, eta=("lognormal", 1.0), aging=("exp", 180.0), seed=("exp-cost", 1))
+    assert counts["aging"] == 0
+    assert sim.meta["n_aging_rebases"] == 0  # 360 days is less than 32 x 180
+    assert 0 < counts["factors"] <= n_events * (1 + sim.meta["n_aging_rebases"])
+    counts["aging"] = counts["factors"] = 0
+    load.simulate(sched, rule="M3", a=1.0, eta=("lognormal", 1.0), aging=("power", 1.0), seed=("exp-cost", 2))
+    assert counts["aging"] > 10 * sched.n_nodes  # the control: power aging still evaluates every candidate in every batch
+    assert counts["factors"] == 0
+
+
+def test_exp_aging_never_empties_the_pool():
+    """D-35: an exp-aged pool whose newest eligible node has positive base weight (here eta = 1) always has a positive weight.
+
+    That node's factor is at least 1, so underflow of older candidates cannot empty the pool; the direct form exp(-dt/tau)
+    underflowed every weight to 0 once the clock was about 745 tau past the newest node, and the slot got no parent.
+    """
+    import load
+    aging = ("exp", 0.01)  # tau = 864 s
+    one = load.Schedule(root_sec=[0], slot_sec=[20 * DAY])  # 2,000 tau after the only root
+    sim = load.simulate(one, rule="M3", eta=np.ones(2), aging=aging, seed=("exp-pool", 1))
+    assert sim.n_edges == 1 and sim.parent.tolist() == [0]
+    assert sim.meta["n_m_capped"] == 0 and sim.meta["n_edges_short"] == 0
+    two = load.Schedule(root_sec=[0, 10 * DAY], slot_sec=[40 * DAY])  # the older root is 3,000 tau behind the newer one
+    sim = load.simulate(two, rule="M3", eta=np.ones(3), aging=aging, seed=("exp-pool", 2))
+    assert sim.n_edges == 1 and sim.parent.tolist() == [1]
+    assert sim.meta["n_m_capped"] == 0 and sim.meta["n_aging_rebases"] == 1
+
+
+def test_exp_aging_rebases_on_a_long_span():
+    import load
+    # tau = 1 second over 2,000 one-second arrivals: a reference fixed at the first second would need exp(1999), which overflows
+    sim = load.simulate(load.synthetic_arrivals(2000), rule="M3", eta=np.ones(2000), aging=("exp", 1.0 / DAY), seed=("exp-span", 1))
+    assert sim.n_edges == 1999 and sim.meta["n_m_capped"] == 0
+    assert sim.meta["n_aging_rebases"] >= 10  # planning prototype: 54
+    assert int((sim.t - sim.node_sec[sim.parent]).max()) <= 60  # parents are the last seconds' nodes (prototype: 21 s)
+
+
+def test_exp_rebase_boundary():
+    import load
+    assert load.EXP_REBASE == 32.0
+    edge = int(load.EXP_REBASE * DAY)  # the newest node's exponent is exactly 32 with tau = 1 day
+    aging = ("exp", 1.0)
+    sim = load.simulate(load.Schedule(root_sec=[0, edge], slot_sec=[edge + DAY]), rule="M3", eta=np.ones(3), aging=aging, seed=("exp-edge", 1))
+    assert sim.meta["n_aging_rebases"] == 0 and sim.parent.tolist() == [1]  # the rule is strict: 32 does not rebase
+    sim = load.simulate(load.Schedule(root_sec=[0, edge + 1], slot_sec=[edge + DAY]), rule="M3", eta=np.ones(3), aging=aging, seed=("exp-edge", 2))
+    assert sim.meta["n_aging_rebases"] == 1 and sim.parent.tolist() == [1]  # one second later it does
+    sim = load.simulate(load.Schedule(root_sec=[0, 5], slot_sec=[]), rule="M3", eta=np.ones(2), aging=aging, seed=("exp-edge", 3))
+    assert sim.n_edges == 0 and sim.meta["n_aging_rebases"] == 0  # no slots, no draws, no factors
+    sim = load.simulate(load.synthetic_arrivals(60), rule="M1", seed=("exp-edge", 4))
+    assert sim.meta["n_aging_rebases"] == 0  # the key is there without aging too
 
 
 # ---------------------------------------------------------------- overflow
