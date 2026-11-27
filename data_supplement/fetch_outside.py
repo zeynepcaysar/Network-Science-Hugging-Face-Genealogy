@@ -47,7 +47,8 @@ FALLBACK_NAME = "raw_fallback.jsonl"  # per-model fallback rows (work file, appe
 STATE_NAME = "fetch_state.json"  # pass start and finish times, sort and counts
 LOCK_NAME = "fetch.lock"  # exists while a run is active
 EXPAND = ["createdAt", "safetensors", "gguf", "downloads", "downloadsAllTime", "likes", "childrenModelCount",
-          "gated", "author", "disabled", "private"]  # D-01 fields; childrenModelCount is a free sanity field
+          "gated", "author", "disabled", "private"]  # D-01 fields; childrenModelCount is a free sanity field (model_info only)
+LIST_EXPAND = [f for f in EXPAND if f != "childrenModelCount"]  # the listing endpoint answers HTTP 400 for childrenModelCount (2026-11-27)
 RAW_COLUMNS = ("id", "resolved_id", "status", "source", "created_at", "safetensors_total", "safetensors_params",
                "gguf_total", "downloads_30d", "downloads_all_time", "likes", "children_model_count", "gated",
                "disabled", "private", "author", "fetched_at", "error")  # raw columns in file order
@@ -65,7 +66,8 @@ FETCH_WINDOW_RULE = ("All popularity values (downloads_30d, downloads_all_time, 
                      "fetch date is the window start (D-16, bounds D-05).")  # recorded in every sidecar
 NOTES = ("Raw Hub values are kept untouched (placeholder dates and zero totals included); all interpretation happens offline. "
          "downloads = downloads over the last 30 days, downloadsAllTime = cumulative downloads, both at the fetch date, later "
-         "than the 5 Nov snapshot; the pre-registered primary popularity correlate is downloads_all_time (D-06).")  # sidecar notes
+         "than the 5 Nov snapshot; the pre-registered primary popularity correlate is downloads_all_time (D-06). "
+         "children_model_count is filled only in rows from model_info: the listing endpoint rejects that field.")  # sidecar notes
 
 
 # ---------------------------------------------------------------- files
@@ -192,7 +194,7 @@ def list_pass(api, ids, out, max_models=None, sort=LIST_SORT):
     seen = duplicates = 0
     t0 = time.time()
     with open(part, "w", encoding="utf-8", newline="\n") as f:
-        for m in api.list_models(expand=EXPAND, sort=sort if sort != "default" else None, limit=max_models):
+        for m in api.list_models(expand=LIST_EXPAND, sort=sort if sort != "default" else None, limit=max_models):
             seen += 1
             low = str(m.id).lower()
             if low in need:
@@ -385,7 +387,7 @@ def freeze_raw(out, ids, accept_errors=False, test_run=False):
         "script": "data_supplement/fetch_outside.py", "test_run": bool(test_run), "n_ids": int(len(df)),
         "counts_by_status": {k: int(v) for k, v in df["status"].value_counts().sort_index().items()},
         "counts_by_source": {k: int(v) for k, v in df["source"].value_counts().sort_index().items()},
-        "inputs": inputs, "huggingface_hub_version": huggingface_hub.__version__, "expand": list(EXPAND),
+        "inputs": inputs, "huggingface_hub_version": huggingface_hub.__version__, "expand": list(EXPAND), "list_expand": list(LIST_EXPAND),
         "authenticated": huggingface_hub.get_token() is not None,  # only whether a token was set, never the token
         "accepted_errors": n_errors if accept_errors else 0, "fetch_window": window, "fetch_date": window["first"][:10],
         "listing_sort": listing.get("sort"), "listing_started_utc": listing.get("started_utc"),
