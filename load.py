@@ -29,7 +29,7 @@ Works from any folder after `bash setup.sh` (which runs `pip install -e .`).
     sim = simulate(arrivals_like(load_net("no_swarm")), rule="M0", seed=("rq1", i))   # matched null on the observed arrival schedule (README: Null trees)
     sim = simulate(sched, rule="M3", a=1.0, eta=("lognormal", 1.0), aging=("exp", 180.0))   # fitness and aging
     G = tree.to_networkx()                     # networkx graph of a Net: about 3 s at 1M nodes, one Python object per node and edge, so for small trees and checks
-    # SIM_STEP (0.01, the simulate batch step) is provisional until the RQ2 convergence stage confirms it; seeded streams are
+    # SIM_STEP (0.000625, the simulate batch step) was confirmed by the RQ2 convergence stage on the full arrival profile; seeded streams are
     # reproducible for the pinned numpy only. random_recursive_tree and price_tree are exact generators, not calls into simulate.
 
 Node attributes: families (tuple, e.g. ("Llama",) or () outside the four families), generation
@@ -89,7 +89,7 @@ VERSION_STYLES = {"full": "-", "no_swarm": "--", "quant_collapsed": ":"}  # one 
 USE_REASONS = ("used", "undated_child", "outside_window", "delayed_first", "same_second_as_entry")  # reason code of every edge (int8 = position); used = hit; precedence = the order of the checks in edge_use (D-05)
 CACHE_SCHEMA = "1"  # INFRA-01: part of the cache key; bump it when the cached table layout or the build in _tables_uncached changes
 SEED = 2026  # INFRA-06: base seed of every label stream; the same constant as checks/edge_check.py
-SIM_STEP = 0.01  # D-05, D-27: sub-batch step f, a batch closes once its arrivals reach f x the current pool; PROVISIONAL until rq2_growth/sim_convergence.py confirms it
+SIM_STEP = 0.000625  # D-05, D-27: sub-batch step f, a batch closes once its arrivals reach f x the current pool; confirmed by rq2_growth/sim_convergence.py on the full arrival profile (results on the rq2-growth branch); Phase 8 re-checks it under measured parameters
 RULES = ("M0", "M1", "M1p", "M2", "M3")  # named attachment rules of simulate (M1p spells M1'); M2 and M3 need fitness and aging parameters
 RESOLUTIONS = ("exact", "month")  # time resolutions of arrivals_like: observed seconds, or seeded uniform draws inside each month
 MAX_REDRAWS = 1000  # simulate: rounds of redrawing duplicate parents of one slot before it gives up (reached only with absurdly concentrated weights)
@@ -1035,7 +1035,8 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
     batch, and the aging clock of power, lognormal and piecewise aging is read at the batch's first second. step=0 forces one arrival per batch: the slots of a second
     then draw in schedule order, each seeing the degree updates of the earlier ones (never each other as parents). That is
     the reference mode for tests and small n; it runs one Python iteration per event, so it is slow at scale. step=SIM_STEP
-    (1%) is provisional until rq2_growth/sim_convergence.py confirms it.
+    (0.0625%) was confirmed by rq2_growth/sim_convergence.py on the full arrival profile (results on the rq2-growth branch); Phase 8
+    re-checks it under measured parameters.
 
     Draw rules (nothing is silently dropped or added; every shortfall is counted in meta):
       * A slot draws min(m, eligible with positive weight) distinct parents (D-03). A capped slot counts in n_m_capped and its missing edges in

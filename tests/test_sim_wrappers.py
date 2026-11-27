@@ -14,7 +14,8 @@ What each group proves:
 - exact known answers: the mean depth of random recursive trees against H_(n-1) - (n-1)/n, and the degree histogram and the
   powerlaw alpha of Price trees against the exact p_k and its population alpha (sim_helpers), with tolerances by the D-23 rule;
 - the README section exists with the recipe, the seed advice, the runtimes, the matched-null caveat and SIM_STEP labelled
-  provisional (the label is not removed before rq2_growth/sim_convergence.py confirms the step; D-27).
+  confirmed by the RQ2 convergence stage (the label was set after rq2_growth/sim_convergence.py passed on the full arrival
+  profile; D-27).
 
 Tolerance rule (D-23): 4 x the sample sd of the statistic over calibration seeds 1..20, rounded up to two significant digits,
 asserted on seeds 101-103 (disjoint from the calibration seeds); the measurements sit next to the constants.
@@ -22,7 +23,6 @@ asserted on seeds 101-103 (disjoint from the calibration seeds); the measurement
 Run from the repo root after activating the venv:  python -m pytest tests/test_sim_wrappers.py
 """
 import inspect
-import re
 import warnings
 from pathlib import Path
 
@@ -216,15 +216,15 @@ def null_trees_section():
 def test_readme_null_trees_section():
     import load
     section = null_trees_section()
-    for needle in ("random_recursive_tree(", "price_tree(", "to_networkx", "158", "provisional", repr(load.SIM_STEP),
+    for needle in ("random_recursive_tree(", "price_tree(", "to_networkx", "158", "confirmed by the RQ2 convergence stage", repr(load.SIM_STEP),
                    'simulate(arrivals_like(load_net("no_swarm")), rule="M0", seed=("rq1", i))', 'seed=("rq1", i)'):
         assert needle in section, f"README 'Null trees' section lacks {needle!r}"
-    assert re.search(r"\bconfirmed\b", section) is None  # SIM_STEP stays provisional until plan 07's stage confirms it (D-27)
+    assert "provisional" not in section  # the label was replaced once plan 07's stage confirmed the step (D-27)
 
 
 def test_module_docstring_examples():
     import load
     doc = load.__doc__
-    for needle in ("random_recursive_tree(", "price_tree(", 'seed=("rq1", i)', "to_networkx", "provisional"):
+    for needle in ("random_recursive_tree(", "price_tree(", 'seed=("rq1", i)', "to_networkx", "confirmed by the RQ2 convergence stage"):
         assert needle in doc, f"load.py docstring lacks {needle!r}"
-    assert re.search(r"\bconfirmed\b", doc) is None
+    assert "provisional" not in doc
