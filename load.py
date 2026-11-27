@@ -581,15 +581,20 @@ def supplement_sec(net, placeholder="missing", path=None):
     if got != want:
         raise ValueError(f"date supplement md5 {got} does not match csv_md5 {want} in {sidecar} - the supplement was changed")
     table = pd.read_csv(path, dtype=str, keep_default_na=False)
-    if not {"id", "created_at", "date_is_placeholder"} <= set(table.columns):
-        raise ValueError(f"{path} lacks the columns id, created_at and date_is_placeholder")
+    lacking = [c for c in ("id", "created_at", "date_is_placeholder") if c not in table.columns]
+    if lacking:
+        raise ValueError(f"{path} lacks column(s) {', '.join(lacking)}")
     usable = table["created_at"] != ""
     if placeholder == "missing":
         usable &= table["date_is_placeholder"] != "True"
     table = table[usable]
     out = net.node_sec.copy()
     if len(table):
-        sec = _epoch_seconds(pd.to_datetime(table["created_at"], utc=True, format="ISO8601"))
+        try:
+            stamps = pd.to_datetime(table["created_at"], utc=True, format="ISO8601")
+        except (ValueError, TypeError) as err:
+            raise ValueError(f"{path}: created_at must be ISO 8601 - {err}") from err
+        sec = _epoch_seconds(stamps)
         idx = net.index_of(table["id"].to_numpy(object))
         known = idx >= 0
         idx, sec = idx[known], sec[known]
