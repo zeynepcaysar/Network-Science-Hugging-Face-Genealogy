@@ -68,7 +68,7 @@ def test_listing_kwargs_and_dedupe(tmp_path):
     api = FakeApi([a, model("org/b"), a, model("other/x")])
     stats = fetch.list_pass(api, ["org/a", "org/b"], tmp_path, max_models=10)
     call = api.list_calls[0]
-    assert call["expand"] == fetch.EXPAND and call["sort"] == "created_at" and call["limit"] == 10
+    assert call["expand"] == fetch.LIST_EXPAND and call["sort"] == "created_at" and call["limit"] == 10
     assert stats == {"seen": 4, "kept": 2, "duplicates": 1}
     rows = [json.loads(line) for line in (tmp_path / fetch.LIST_NAME).read_text(encoding="utf-8").splitlines()]
     assert sorted(r["id"] for r in rows) == ["org/a", "org/b"]
@@ -137,6 +137,13 @@ def test_429_waits_reset_plus_one():
     sleep2 = Recorder()
     api2 = FakeApi([], sequence_info({"org/a": [http_error(429), model("org/a")]}))
     assert fetch.fetch_one(api2, "org/a", sleep=sleep2)["status"] == "ok" and sleep2.calls == [60]
+
+
+def test_list_expand_leaves_out_what_the_listing_endpoint_rejects():
+    """The Hub's listing endpoint answers HTTP 400 for expand=childrenModelCount (seen 2026-11-27); model_info accepts it."""
+    fetch = fetch_module()
+    assert "childrenModelCount" in fetch.EXPAND and "childrenModelCount" not in fetch.LIST_EXPAND
+    assert [f for f in fetch.EXPAND if f != "childrenModelCount"] == fetch.LIST_EXPAND
 
 
 def test_timeout_and_expand_passed():
