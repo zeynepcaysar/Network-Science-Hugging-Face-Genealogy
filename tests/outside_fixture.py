@@ -10,7 +10,7 @@ import importlib.util
 from pathlib import Path
 
 import httpx2
-from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
+from huggingface_hub.errors import DisabledRepoError, GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
 from huggingface_hub.hf_api import ModelInfo
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +42,44 @@ def _response(code, repo_id="org/name", headers=None):
 def not_found_error(repo_id, code=401):
     """What the Hub client raises for a missing repo: HTTP 401 anonymously, 404 with a token."""
     return RepositoryNotFoundError("Repository Not Found", response=_response(code, repo_id))
+
+
+def http_error(code, headers=None, repo_id="org/name"):
+    """An HfHubHTTPError on an HTTP response with this status code and these headers."""
+    return HfHubHTTPError(str(code), response=_response(code, repo_id, headers))
+
+
+def gated_error(repo_id):
+    return GatedRepoError("Gated repo", response=_response(401, repo_id))
+
+
+def disabled_error(repo_id):
+    return DisabledRepoError("Disabled repo", response=_response(403, repo_id))
+
+
+def sequence_info(outcomes):
+    """An info callable for FakeApi: outcomes maps a repo id to a list of results (exceptions or ModelInfo), used in order.
+
+    The last result of a list repeats forever; an id that is not in outcomes raises the 401 not-found error.
+    """
+    pending = {k: list(v) for k, v in outcomes.items()}
+
+    def info(repo_id):
+        if repo_id not in pending:
+            return not_found_error(repo_id)
+        queue = pending[repo_id]
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+    return info
+
+
+class Recorder:
+    """A sleep replacement: records the requested waits and returns at once."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, seconds):
+        self.calls.append(seconds)
 
 
 class FakeApi:
