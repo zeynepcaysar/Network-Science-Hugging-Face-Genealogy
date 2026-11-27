@@ -12,6 +12,7 @@ Works from any folder after `bash setup.sh` (which runs `pip install -e .`).
     rows = verify_data()                       # md5 of the frozen files vs data/MANIFEST.txt
     net = load_net("no_swarm", families=["Qwen"])   # array network: integer ids, edges sorted by time, no networkx
     entry, delayed = pool_entry(net)           # when each node becomes a candidate parent (D-02, D-04, D-05)
+    entry, delayed = pool_entry(net, node_sec=supplement_sec(net))   # opt-in upload-date supplement (OUT-04): fills only dates v1 lacks; placeholder="date" is the sensitivity run
     k = event_degree(net)                      # the parent's degree just before each attachment (D-01, D-03)
     d = outdeg_before(net, month_start_sec(m)) # out-degree at the start of month m (months since 1970-01); not the kernel's k
     G = net.to_networkx()                      # the same graph load() gives, for small nets and checks
@@ -67,6 +68,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import numbers
+import json
 
 _HFG_DATA = os.environ.get("HFG_DATA")  # INFRA-07: data folder override, read once at import; empty counts as unset
 DATA = Path(_HFG_DATA).expanduser().resolve() if _HFG_DATA else Path(__file__).resolve().parent / "data"
@@ -74,6 +76,7 @@ VERSIONS = ("full", "no_swarm", "quant_collapsed")
 _MANIFEST_LINE = re.compile(r"^([0-9a-f]{32})\s+([\d,]+) rows\s+(\S+)\s*$")  # entry format written by data_pipeline/analyse.py
 _REQUIRED = ("nodes.csv", "edges.csv", "edges_quant_collapsed.csv", "edges_aliases.csv")  # files load_tables() reads (D-01)
 RESULTS = Path(__file__).resolve().parent / "results"  # default results root; HFG_RESULTS overrides it at call time
+SUPPLEMENT = Path(__file__).resolve().parent / "data_supplement" / "date_supplement.csv"  # OUT-04: committed upload-date supplement read by supplement_sec (opt-in); its provenance sidecar sits next to it
 NO_TIME = np.iinfo(np.int64).max  # epoch-second sentinel for a missing date: sorts last, never inside a window, an undated parent counts as later than any child
 REL_CODES = ("finetune", "adapter", "quantized", "merge", "unknown", "reupload")  # edge rel values plus "reupload" (alias edges); int8 code = position
 _NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")  # allowed results file and folder names: ASCII, no separators, no leading dot
@@ -554,6 +557,45 @@ def pool_entry(net, node_sec=None):
     np.minimum.at(first, net.parent, net.t)
     delayed = (first != NO_TIME) & (sec > first)
     return np.where(delayed, first, sec), delayed
+
+
+def supplement_sec(net, placeholder="missing", path=None):
+    """Node seconds equal to net.node_sec, with the supplement's Hub dates filled in only where v1 has none (NO_TIME); OUT-04.
+
+    placeholder="missing" keeps the Hub's placeholder date (2022-03-02, the v1 BACKFILL_DATE convention) as missing;
+    placeholder="date" uses it, the labelled sensitivity run; any other value raises ValueError. path=None reads SUPPLEMENT,
+    a path points at another supplement file; either is md5-checked against csv_md5 in its provenance sidecar first.
+    A v1 date is never replaced and ids outside the net are ignored. Example:
+    entry, delayed = pool_entry(net, node_sec=supplement_sec(net))
+    """
+    if placeholder not in ("missing", "date"):
+        raise ValueError(f"placeholder must be 'missing' or 'date', not {placeholder!r}")
+    path = SUPPLEMENT if path is None else Path(path)
+    sidecar = path.with_name(path.stem + ".provenance.json")
+    for p in (path, sidecar):
+        if not p.is_file():
+            raise FileNotFoundError(f"{p} not found - the date supplement needs its CSV and its provenance sidecar (see data_supplement/README.md)")
+    want = json.loads(sidecar.read_text(encoding="utf-8")).get("csv_md5")
+    with open(path, "rb") as handle:
+        got = hashlib.file_digest(handle, lambda: hashlib.md5(usedforsecurity=False)).hexdigest()
+    if got != want:
+        raise ValueError(f"date supplement md5 {got} does not match csv_md5 {want} in {sidecar} - the supplement was changed")
+    table = pd.read_csv(path, dtype=str, keep_default_na=False)
+    if not {"id", "created_at", "date_is_placeholder"} <= set(table.columns):
+        raise ValueError(f"{path} lacks the columns id, created_at and date_is_placeholder")
+    usable = table["created_at"] != ""
+    if placeholder == "missing":
+        usable &= table["date_is_placeholder"] != "True"
+    table = table[usable]
+    out = net.node_sec.copy()
+    if len(table):
+        sec = _epoch_seconds(pd.to_datetime(table["created_at"], utc=True, format="ISO8601"))
+        idx = net.index_of(table["id"].to_numpy(object))
+        known = idx >= 0
+        idx, sec = idx[known], sec[known]
+        fill = out[idx] == NO_TIME
+        out[idx[fill]] = sec[fill]
+    return out
 
 
 def edge_use(net, entry_sec, delayed, start, end):
