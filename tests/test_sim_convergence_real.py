@@ -114,3 +114,11 @@ def test_m0_rows_reproduce(tmp_path):
     assert len(expected) == len(STATS), len(expected)
     assert fresh[0] == committed_text("sim_convergence.csv").splitlines()[0]
     assert m0_lines(fresh) == expected
+
+
+def test_chosen_step_is_load_default():
+    """The step the stage chose is the shared default on main (D-27): no drift between the evidence and the code."""
+    numbers = committed_frame("numbers_sim_convergence.csv")
+    chosen_text = number(numbers, "all", "chosen_step")
+    assert chosen_text != ""
+    assert float(chosen_text) == load.SIM_STEP, (chosen_text, load.SIM_STEP)
