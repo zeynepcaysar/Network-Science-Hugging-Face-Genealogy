@@ -5,16 +5,20 @@ Hub models and errors. No fixtures and no network: every test passes a FakeApi, 
 
     fetch = load_script("fetch_outside")                    # data_supplement/fetch_outside.py as a module, loaded once
     api = FakeApi([model("org/name", createdAt="2024-08-03T10:00:00.000Z", downloads=5)])
+    raw = make_raw(tmp_path, ids)                           # frozen raw_hub_fetch.parquet of the data_mini ids (load.DATA must point at the copy)
 """
 import importlib.util
+import json
 from pathlib import Path
 
 import httpx2
+import pandas as pd
 from huggingface_hub.errors import DisabledRepoError, GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
 from huggingface_hub.hf_api import ModelInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "data_supplement"
+RAW_MINI = ROOT / "tests" / "fixtures" / "outside" / "raw_mini.jsonl"  # hand-written raw fetch of the data_mini ids
 _LOADED = {}
 
 
@@ -111,3 +115,42 @@ class FakeApi:
         if isinstance(result, BaseException):
             raise result
         return result
+
+
+# ---------------------------------------------------------------- raw fetch and supplement files
+def raw_rows():
+    """The rows of tests/fixtures/outside/raw_mini.jsonl as dicts (keys = fetch_outside.RAW_COLUMNS), one per data_mini id."""
+    return [json.loads(line) for line in RAW_MINI.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def make_raw(tmp_path, ids, rows=None, test_run=False):
+    """Freeze rows (default: raw_mini.jsonl) in the real raw format and return the path of the parquet.
+
+    The rows are written as a listing work file to <tmp>/out/raw_list.jsonl and frozen with fetch_outside.freeze_raw, which
+    records load.DATA's nodes.csv and MANIFEST.txt, so the caller points load.DATA at a data copy with a MANIFEST first.
+    """
+    fetch = load_script("fetch_outside")
+    out = Path(tmp_path) / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / fetch.LIST_NAME, "w", encoding="utf-8", newline="\n") as f:
+        for row in (raw_rows() if rows is None else rows):
+            f.write(json.dumps(row) + "\n")
+    fetch.freeze_raw(out, ids, test_run=test_run)
+    return out / fetch.RAW_NAME
+
+
+def write_supplement_files(tmp_path, rows):
+    """Write date_supplement.csv and its sidecar into <tmp>/supp from rows (dicts with at least id, created_at and
+    date_is_placeholder; the other columns get defaults); an empty list gives a header-only supplement. Returns the CSV path."""
+    build = load_script("build_date_supplement")
+    base = {"status": "ok", "resolved_id": "", "created_at": "", "date_is_placeholder": False, "shared_repo": False,
+            "source": "list", "fetched_at": "2026-11-28T09:00:00+00:00", "v1_reason": "no_metadata", "downloads_30d": pd.NA,
+            "downloads_all_time": pd.NA, "likes": pd.NA, "note": ""}
+    full = [{**base, "resolved_id": r["id"], **r} for r in rows]
+    frame = pd.DataFrame(full, columns=list(build.SUPPLEMENT_COLUMNS))
+    for col in ("downloads_30d", "downloads_all_time", "likes"):
+        frame[col] = pd.array(frame[col], dtype="Int64")
+    out = Path(tmp_path) / "supp"
+    out.mkdir(parents=True, exist_ok=True)
+    build.write_supplement(frame, {"script": "tests/outside_fixture.py"}, out)
+    return out / build.CSV_NAME
