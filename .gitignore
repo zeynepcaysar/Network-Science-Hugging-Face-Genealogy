@@ -27,6 +27,7 @@ htmlcov/
 data/*
 !data/README.md
 data-v1/
+data-outside/
 
 # Temporary folders
 _tmp_claude/
