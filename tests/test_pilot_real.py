@@ -61,7 +61,7 @@ def committed(name):
 def tracked_files():
     out = subprocess.run(["git", "ls-files", "results/rq2"], capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
     assert out.returncode == 0, out.stderr
-    return sorted(Path(line).name for line in out.stdout.splitlines() if line.strip())
+    return sorted(Path(line).name for line in out.stdout.splitlines() if line.strip() and "pilot_qwen" in Path(line).name)
 
 
 def test_real_params_carry_counts():
