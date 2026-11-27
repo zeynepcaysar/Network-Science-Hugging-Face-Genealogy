@@ -57,6 +57,7 @@ Tables and figures written through save_table and save_fig are byte-identical wh
 Table cache: when DATA/MANIFEST.txt exists, load_tables() caches the final tables of each (version, aliases) in DATA/.cache/
 (parquet, keyed on the MANIFEST md5 entries, CACHE_SCHEMA and the pandas major version; rebuilt when stale or damaged, the output
 never changes). HFG_CACHE=off (read at each call, empty counts as unset) bypasses it; deleting the folder resets it.
+A cache that cannot be read or written (any error, or pyarrow missing) gives the uncached tables and a note: line.
 """
 import hashlib, re, sys
 import os
@@ -109,6 +110,7 @@ def load_tables(version="full", aliases=False, families=None):
     """Return (nodes, edges) DataFrames for one network version."""
     if version not in VERSIONS:
         raise ValueError(f"version must be one of {VERSIONS}")
+    aliases = bool(aliases)  # WR-02, D-38: every value acts as `if aliases:` did before the cache; the cache key digit is 0 or 1
     cached = _cached_tables(version, aliases, families)
     if cached is not None:
         return cached
@@ -241,7 +243,7 @@ def _cache_key(digests):
 
 def _cache_paths(data, version, aliases, key):
     """(nodes file, edges file) of one (version, aliases) pair under data/.cache/."""
-    stem = data / ".cache" / f"tables_{version}_{int(aliases)}_{key}"
+    stem = data / ".cache" / f"tables_{version}_{int(bool(aliases))}_{key}"
     return stem.with_name(stem.name + ".nodes.parquet"), stem.with_name(stem.name + ".edges.parquet")
 
 
@@ -283,8 +285,8 @@ def _write_parquet(frame, path, key):
 
 def _read_parquet(path, key):
     """The frame in path, or None when the file is missing, unreadable, or its key, name or row count does not match."""
-    import pyarrow.parquet as pq
     try:
+        import pyarrow.parquet as pq
         table = pq.read_table(path)
         meta = table.schema.metadata or {}
         if (meta.get(b"hfg_key") != key.encode() or meta.get(b"hfg_name") != path.name.encode()
@@ -315,6 +317,11 @@ def _cached_tables(version, aliases, families):
     """The final tables from DATA/.cache/, built and written on first use; None means no cache (off, no MANIFEST, md5 mismatch)."""
     if _cache_off():
         return None
+    try:
+        import pyarrow.compute, pyarrow.parquet  # WR-03, D-38: a missing pyarrow gives the fully uncached path
+    except ImportError as e:
+        print(f"note: cannot write the table cache in {DATA / '.cache'} ({e}) - tables built from the CSVs")
+        return None
     digests = _manifest_digests(DATA)
     if digests is None or not all((DATA / n).is_file() for n in _REQUIRED):
         return None
@@ -331,10 +338,10 @@ def _cached_tables(version, aliases, families):
             nodes_path.parent.mkdir(exist_ok=True)
             _write_parquet(nodes, nodes_path, key)
             _write_parquet(edges, edges_path, key)
-        except OSError as e:
+        except Exception as e:  # WR-03, D-38: any write failure (OSError, pyarrow ArrowInvalid or ArrowTypeError, ...) gives the uncached tables
             print(f"note: cannot write the table cache in {nodes_path.parent} ({e}) - tables built from the CSVs")
         else:
-            for old in nodes_path.parent.glob(f"tables_{version}_{int(aliases)}_*.parquet"):  # files of an older key; best effort
+            for old in nodes_path.parent.glob(f"tables_{version}_{int(bool(aliases))}_*.parquet"):  # files of an older key; best effort
                 if old not in (nodes_path, edges_path):
                     try:
                         old.unlink()
