@@ -4,6 +4,8 @@ DATA/.cache/ on the first load and the second load reads it without touching a C
 Groups: the tracer (cold build, warm read equal to the uncached build), the load_net arrays cold and warm, the
 no-MANIFEST rule (the fixture folder is never written), the 25 golden combinations cold then warm, the families
 filter on warm tables, and every failure mode (corrupt, foreign, stale, md5 mismatch, unwritable, HFG_CACHE=off).
+Any aliases value behaves as before the cache, and any write failure or a missing pyarrow gives the uncached tables
+with the note line (D-38).
 Every case runs on a tmp copy of tests/fixtures/data_mini with a generated MANIFEST.txt (conftest mini_cached);
 the fixture itself is never written.
 
@@ -15,10 +17,12 @@ import hashlib
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow
 import pyarrow.parquet as pq
 import pytest
 
@@ -264,6 +268,69 @@ def test_only_cache_folder_written(mini_cached):
             load.load_tables(version, aliases)
     assert snapshot(load.DATA, skip=(".cache",)) == before
     assert len(parquet_files(load)) == 2 * len(VERSION_ALIAS_PAIRS)
+
+
+# ---------------------------------------------------------------- aliases values and cache write failures (WR-02, WR-03, D-38)
+ALIASES_VALUES = [(None, False), (0, False), ("", False), (np.False_, False),
+                  (1, True), (2, True), ("0", True), ("no", True), (np.True_, True)]
+ALIASES_IDS = ["None", "int0", "empty", "np_False", "int1", "int2", "str0", "str_no", "np_True"]
+CACHE_FILE = re.compile(r"tables_no_swarm_[01]_[0-9a-f]{16}\.(nodes|edges)\.parquet")
+
+
+@pytest.mark.parametrize("value,as_bool", ALIASES_VALUES, ids=ALIASES_IDS)
+def test_aliases_values_behave_as_before_the_cache(mini_cached, value, as_bool):
+    load = mini_cached
+    got = load.load_tables("no_swarm", aliases=value)
+    assert_equal_tables(got, load._tables_uncached("no_swarm", value, None))
+    assert_equal_tables(got, load.load_tables("no_swarm", aliases=as_bool))
+    assert all(CACHE_FILE.fullmatch(p.name) for p in parquet_files(load)), [p.name for p in parquet_files(load)]
+
+
+@pytest.mark.parametrize("value,as_bool", ALIASES_VALUES, ids=ALIASES_IDS)
+def test_bool_loads_after_an_aliases_value_get_their_own_tables(mini_cached, value, as_bool):
+    # A value whose key digit differs from its bool digit leaves a cache file that a later bool load reads back ("0" put
+    # the alias tables under the no-alias digit 0) or adds a third pair (2), which a single-value case cannot see (WR-02, D-38).
+    load = mini_cached
+    load.load_tables("no_swarm", aliases=value)
+    for flag in (False, True):
+        assert_equal_tables(load.load_tables("no_swarm", aliases=flag), load._tables_uncached("no_swarm", flag, None))
+    names = [p.name for p in parquet_files(load)]
+    assert len(names) == 4 and all(CACHE_FILE.fullmatch(n) for n in names), names
+
+
+def test_load_and_load_net_accept_aliases_none(mini_cached):
+    load = mini_cached
+    G, base = load.load("no_swarm", aliases=None), load.load("no_swarm")
+    assert (G.number_of_nodes(), G.number_of_edges()) == (base.number_of_nodes(), base.number_of_edges())
+    assert load.load_net("no_swarm", aliases=None).n_edges == load.load_net("no_swarm").n_edges
+
+
+@pytest.mark.parametrize("error", [pyarrow.ArrowInvalid("raised by the test"), pyarrow.ArrowTypeError("raised by the test"),
+                                   TypeError("raised by the test")], ids=["ArrowInvalid", "ArrowTypeError", "TypeError"])
+def test_any_write_error_notes_and_returns_uncached(mini_cached, monkeypatch, capsys, error):
+    load = mini_cached
+
+    def fail(frame, path, key):
+        raise error
+
+    monkeypatch.setattr(load, "_write_parquet", fail)
+    got = load.load_tables("full")
+    out = capsys.readouterr().out
+    assert [line for line in out.splitlines() if line.startswith("note: cannot write the table cache")]
+    assert_equal_tables(got, load._tables_uncached("full", False, None))
+    assert_equal_tables(load.load_tables("full", families=["Llama"]), load._tables_uncached("full", False, ["Llama"]))
+
+
+def test_missing_pyarrow_notes_and_returns_uncached(mini_cached, monkeypatch, capsys):
+    # Only pyarrow.parquet is hidden: pandas itself holds pyarrow and pyarrow.compute for its string columns, and the
+    # load.py probe covers all three names, so one missing name is enough to reach the fallback.
+    load = mini_cached
+    monkeypatch.setitem(sys.modules, "pyarrow.parquet", None)
+    got = load.load_tables("full", families=["Llama"])
+    out = capsys.readouterr().out
+    assert [line for line in out.splitlines() if line.startswith("note: cannot write the table cache")]
+    assert_equal_tables(got, load._tables_uncached("full", False, ["Llama"]))
+    assert parquet_files(load) == []
 
 
 # ---------------------------------------------------------------- the family filter on warm tables
