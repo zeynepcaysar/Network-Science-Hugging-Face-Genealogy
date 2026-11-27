@@ -183,7 +183,7 @@ def verify_data(data_dir=None):
     for want, _, name in entries:
         posix, windows = PurePosixPath(name), PureWindowsPath(name)
         target = None
-        if not (posix.is_absolute() or windows.is_absolute() or windows.drive or windows.root
+        if posix.parts and not (posix.is_absolute() or windows.is_absolute() or windows.drive or windows.root
                 or ".." in posix.parts or ".." in windows.parts):
             parts = posix.parts
             target = data.joinpath(*parts[1:]) if parts[0] == "data" else root.joinpath(*parts)
