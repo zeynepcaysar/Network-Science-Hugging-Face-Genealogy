@@ -24,6 +24,9 @@ What this file proves:
     CERT_MARGIN from a cumulative-weight boundary, and no candidate's log weight relative to the newest node lies near the float
     floor, so neither the draw nor the positive-weight count can hinge on float rounding. Three exp mutations of the engine
     (M-stale, M-partial-rebase, M-no-rebase) are recorded in the plan 03-08 summary.
+  * The D-37 fallback: both paths redraw duplicates for at most the cap (REF_MAX_REDRAWS, an independent copy of
+    load.MAX_REDRAWS), then finish the still-duplicated positions in draw order on masked cumulative weights (the weights with the
+    slot's held parents set to 0). The natural cap is compared with M1 a = 1e-6, and the cap forced to 0 for every weight path.
   * test_ensemble_agreement_default_step: at the default step an ensemble of 30 seeds on a bursty schedule of 5,000 nodes
     agrees with the per-arrival ensemble (step=0, identical to the reference by the first test), same seed labels (common
     random numbers): for leaf share, top-10 edge share, k_max/N and mean depth the shift of the medians is below 1/4 of the
@@ -45,6 +48,7 @@ from sim_helpers import bursty_schedule, shift_ratio, sim_statistics
 
 NO_TIME = np.iinfo(np.int64).max  # independent copy of load.NO_TIME (the oracle must not import what it checks)
 DAY = 86400
+REF_MAX_REDRAWS = 1000  # independent copy of load.MAX_REDRAWS: redraw rounds per slot before the exact fallback (D-37)
 # Certificate of the exp comparisons (D-34, D-35). The engine's and the oracle's normalised cumulative weights differ by less than
 # 1e-13 on the reference schedule (about 330 nodes) and the underflow schedule (about 65 nodes): their weight vectors differ by one
 # common factor exp((t_newest - t_ref)/tau), at most exp(32), plus a few ulp per exponent of magnitude at most about 160, and a
@@ -71,7 +75,7 @@ def reference_aging(spec, dt):
     return out
 
 
-def reference_simulate(schedule, a, beta, eta_values, aging, labels, margins=None):
+def reference_simulate(schedule, a, beta, eta_values, aging, labels, margins=None, max_redraws=REF_MAX_REDRAWS):
     """True per-arrival growth in plain Python loops; returns (parent, child, rel, depth) over schedule node indices.
 
     Events run in the order (second, roots before slots, node index); never-entering roots are skipped. A slot's eligible
@@ -84,8 +88,9 @@ def reference_simulate(schedule, a, beta, eta_values, aging, labels, margins=Non
     candidates are; a base weight of 0 stays a true zero, and the other aging kinds keep the slot's second as the clock. When a
     list is passed as margins, every weighted draw appends its distance to the nearest cumulative-weight boundary, relative
     to the total weight (the draw certificate). It draws min(m, positive-weight candidates) parents with one rng.random call, then
-    redraws duplicates in draw order, and the parents' degrees go up at once, so the next slot, even in the same second,
-    sees them. Undated slots come last, one at a time, against all dated nodes with the clock at the last dated second, and
+    redraws duplicates in draw order for at most max_redraws rounds (D-37); positions still duplicated after that are finished,
+    in draw order with one rng.random call, by pick_masked: the weights with every parent the slot holds set to 0. The parents'
+    degrees go up at once, so the next slot, even in the same second, sees them. Undated slots come last, one at a time, against all dated nodes with the clock at the last dated second, and
     are never parents.
     """
     import load
@@ -139,7 +144,21 @@ def reference_simulate(schedule, a, beta, eta_values, aging, labels, margins=Non
                 margins.append(min(target - low, high - target) / cum[-1])
             return min(p, bisect.bisect_left(cum, cum[-1]))
 
+        def pick_masked(x, held):
+            sums, running = [], 0.0
+            for index, w in enumerate(weights):
+                running += 0.0 if index in held else w
+                sums.append(running)
+            target = x * sums[-1]
+            p = bisect.bisect_right(sums, target)
+            if margins is not None:
+                low = sums[p - 1] if p > 0 else 0.0
+                high = sums[p] if p < len(sums) else sums[-1]
+                margins.append(min(target - low, high - target) / sums[-1])
+            return min(p, bisect.bisect_left(sums, sums[-1]))
+
         picks = [pick(x) for x in rng.random(m_eff)]
+        rounds = 0
         while m_eff > 1:
             seen, redo = set(), []
             for position, p in enumerate(picks):
@@ -148,6 +167,11 @@ def reference_simulate(schedule, a, beta, eta_values, aging, labels, margins=Non
                 else:
                     seen.add(p)
             if not redo:
+                break
+            rounds += 1
+            if rounds > max_redraws:  # D-37: finish the still-duplicated positions exactly, in draw order
+                for position, x in zip(redo, rng.random(len(redo))):
+                    picks[position] = pick_masked(x, set(picks))
                 break
             for position, x in zip(redo, rng.random(len(redo))):
                 picks[position] = pick(x)
@@ -221,13 +245,14 @@ CONFIGS = {
 }
 
 
-def assert_identical(sched, kwargs, name, margins=None):
+def assert_identical(sched, kwargs, name, margins=None, max_redraws=REF_MAX_REDRAWS):
     import load
     labels = ("ref", name)
     sim = load.simulate(sched, step=0, seed=labels, **kwargs)
     beta = sim.meta["beta"]
     eta = sim.nodes["eta"].to_numpy(float) if "eta" in sim.nodes.columns else None
-    parent, child, rel, depth, node_sec = reference_simulate(sched, sim.meta["a"], beta, eta, sim.meta["aging"], labels, margins=margins)
+    parent, child, rel, depth, node_sec = reference_simulate(sched, sim.meta["a"], beta, eta, sim.meta["aging"], labels, margins=margins,
+                                                             max_redraws=max_redraws)
     t = node_sec[child]
     order = np.lexsort((parent, child, t))
     mine = np.lexsort((sim.parent, sim.child, sim.t))
@@ -331,6 +356,41 @@ def test_reference_identical_exp_underflow():
     clusters = np.split(seconds, np.flatnonzero(np.diff(seconds) > 1000 * tau) + 1)
     assert len(clusters) == 8 and all((c.max() - c.min()) < 200 * tau for c in clusters)  # positivity certificate
     assert log_weight_bound(sim) < 100
+
+
+# ---------------------------------------------------------------- the D-37 fallback after the redraw cap
+ZERO_WEIGHTS_KWARGS = {"rule": "M3", "a": 1.0, "eta": ("lognormal", 0.5), "aging": ("piecewise", (0, 3), (1.0, 0.0))}  # as in test_reference_identical_zero_weights
+FORCED_NAMES = ["M0", "M1", "M1p", "M2", "M3-exp", "M3-power", "M3-piecewise", "fitness-only", "zero-weights"]
+
+
+def test_redraw_cap_copies_agree():
+    """The oracle's cap is an independent copy of the engine's: they must stay equal, or the identity tests compare different caps."""
+    import load
+    assert load.MAX_REDRAWS == REF_MAX_REDRAWS == 1000
+
+
+def test_reference_identical_fallback():
+    """The natural cap: a = 1e-6 concentrates the weights, so slots reach MAX_REDRAWS and the exact fallback finishes them in both paths."""
+    import load
+    sched = reference_schedule()
+    sim = assert_identical(sched, {"rule": "M1", "a": 1e-6}, "M1-tiny-a")
+    assert sim.meta["n_fallback_slots"] >= 1  # planning prototype: 2
+    assert sim.n_edges > 300
+    # with all weights positive the shortfall is min(m, eligible), the same as for a = 1
+    assert sim.meta["n_edges_short"] == load.simulate(sched, rule="M1", step=0, seed=("ref", "M1")).meta["n_edges_short"]
+
+
+@pytest.mark.parametrize("name", FORCED_NAMES)
+def test_reference_identical_forced_fallback(name, monkeypatch):
+    """Cap forced to 0 in both paths: the first duplicate of every multi-parent slot goes to the fallback, over every weight path."""
+    import load
+    monkeypatch.setattr(load, "MAX_REDRAWS", 0)
+    kwargs = ZERO_WEIGHTS_KWARGS if name == "zero-weights" else CONFIGS[name]
+    margins = []
+    sim = assert_identical(reference_schedule(), kwargs, name, margins=margins, max_redraws=0)
+    assert sim.meta["n_fallback_slots"] >= 1  # planning prototype: 7 to 56
+    if name == "M3-exp":
+        assert min(margins) > CERT_MARGIN  # the fallback's masked draws keep clear of cumulative-weight boundaries too
 
 
 # ---------------------------------------------------------------- agreement in distribution at the default step

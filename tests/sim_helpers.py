@@ -13,9 +13,15 @@ price_pk(k, a), rrt_mean_depth(n) and population_alpha(a, xmin) are the exact re
 the stationary Price degree distribution, the mean node depth of a random recursive tree, and the value powerlaw's discrete
 estimator converges to on Price degrees.
 
+arrays_digest(net) is the 16-character sha256 digest of a Net's parent, child, rel and depth arrays (D-37 stream pins):
+equal arrays give equal digests on every OS, and tests/test_sim_rules.py and tests/test_sim_real.py compare it with values
+recorded from load.py before the exact fallback was added.
+
 Used by tests/test_sim_invariants.py, tests/test_sim_reference.py, tests/test_sim_convergence.py,
 tests/test_sim_known_answers.py and tests/test_sim_wrappers.py (the tests/ folder is on the pytest path, see pyproject.toml).
 """
+import hashlib
+
 import numpy as np
 import pandas as pd
 from scipy import optimize, special
@@ -73,6 +79,14 @@ def bursty_schedule(n, n_roots=5, months=12, burst_share=0.3):
     sec = np.sort(np.concatenate([rest, burst]), kind="stable")
     meta = {"source": "bursty", "n": int(n), "n_roots": int(n_roots), "months": int(months), "burst_share": float(burst_share)}
     return load.Schedule(np.zeros(n_roots, np.int64), sec, meta=meta)
+
+
+def arrays_digest(net):
+    """First 16 hex characters of sha256 over parent, child, rel and depth with explicit little-endian dtypes (D-37 stream pins)."""
+    digest = hashlib.sha256()
+    for array, dtype in ((net.parent, "<i8"), (net.child, "<i8"), (net.rel, "i1"), (net.nodes["depth"].to_numpy(), "<i8")):
+        digest.update(np.ascontiguousarray(array, dtype).tobytes())
+    return digest.hexdigest()[:16]
 
 
 def out_degree(net):

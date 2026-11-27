@@ -8,12 +8,18 @@ and checks that it keeps the data's 968,595 nodes, has exactly one bootstrap edg
 load.edge_use (every parent entered before its child). The pinned numbers are facts of the frozen data (data/MANIFEST.txt);
 a count that differs is a finding to diagnose, not a number to edit.
 
+It then runs the four CR-01 calls, the parameters on which simulate used to raise after MAX_REDRAWS redraw rounds (03-VERIFICATION.md):
+M1 with a = 1e-4, M1' with beta = 1.5, M2 with lognormal sigma = 2 and the pilot's measured a = 1e-6, beta = 0.81134728, each on the
+full arrival profile with the default seed and step. The D-37 fallback now finishes them (about 70 s in total); each must return
+the data's node and edge counts, lose no edge and give every slot its distinct parents. Two more runs pin the real streams: M0 and M1
+at the default step with the first seed of the convergence stage must reproduce the digests recorded from load.py before the fallback.
+
 Run from the repo root after activating the venv and copying the data (see data/README.md):
 
     python -m pytest tests/test_sim_real.py -m data -q -s
 
-The module first re-checks the md5 of every frozen file with load.verify_data(). It takes about 30-60 s (three warm real loads
-and one full-size simulation).
+The module first re-checks the md5 of every frozen file with load.verify_data(). It takes about 2 minutes (three warm real loads
+and the full-size simulations).
 """
 import time
 
@@ -21,6 +27,7 @@ import numpy as np
 import pytest
 
 import load
+from sim_helpers import arrays_digest
 
 pytestmark = pytest.mark.data
 
@@ -71,3 +78,42 @@ def test_real_full_simulation_keeps_counts():
     assert sim.n_edges == FACTS["full"][5] - short
     assert sim.meta["n_bootstrap_edges"] == 1
     load.edge_use(sim, *load.pool_entry(sim), 0, load.NO_TIME)  # raises if any edge precedes its parent's pool entry
+
+
+# ---------------------------------------------------------------- concentrated weights on the real profile (CR-01, D-37)
+CR01_CALLS = {  # the pilot row is full,all,k_ge_1 of rq2-growth's results/rq2/pilot_qwen_params.csv: a at its 1e-6 bound
+    "M1-a1e-4": {"rule": "M1", "a": 1e-4},
+    "M1p-beta1.5": {"rule": "M1p", "beta": 1.5},
+    "M2-lognormal2": {"rule": "M2", "eta": ("lognormal", 2.0)},
+    "pilot-full": {"a": 1e-6, "beta": 0.81134728},
+}
+REAL_PINNED_DIGESTS = {"M0": "0edaa75e927812cb", "M1": "2e055662a56f7260"}  # recorded from load.py at ae62caa, numpy 2.5.5
+
+
+@pytest.fixture(scope="module")
+def full_schedule():
+    return load.arrivals_like(load.load_net("full"))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("name", list(CR01_CALLS))
+def test_real_full_concentrated_weights_run(name, full_schedule):
+    start = time.time()
+    sim = load.simulate(full_schedule, **CR01_CALLS[name])
+    seconds = time.time() - start
+    print(f"CR-01 call {name}: {seconds:.1f} s, n_fallback_slots {sim.meta['n_fallback_slots']:,}, n_batches {sim.meta['n_batches']:,}")
+    assert sim.n_nodes == FULL_NODES
+    assert sim.n_edges == FACTS["full"][5]
+    assert sim.meta["n_edges_short"] == 0 and sim.meta["n_m_capped"] == 0
+    assert sim.meta["n_fallback_slots"] >= 1
+    load.edge_use(sim, *load.pool_entry(sim), 0, load.NO_TIME)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("rule", list(REAL_PINNED_DIGESTS))
+def test_real_full_streams_pinned(rule, full_schedule):
+    """Runs that finish within the cap keep their stream on the real profile (D-37): the stage's first seed gives the recorded digest."""
+    kwargs = {"rule": "M0"} if rule == "M0" else {"rule": "M1", "a": 1.0}
+    sim = load.simulate(full_schedule, seed=("sim_convergence", rule, 1), **kwargs)
+    assert sim.meta.get("n_fallback_slots", 0) == 0
+    assert arrays_digest(sim) == REAL_PINNED_DIGESTS[rule]
