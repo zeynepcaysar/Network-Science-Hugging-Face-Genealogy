@@ -4,7 +4,7 @@ verify_data() checks every entry of data/MANIFEST.txt against the files next to 
 (status, name, detail) rows: PASS, FAIL or note. The four CSVs that load_tables() reads and MANIFEST.txt
 itself are required (FAIL when missing or wrong); models.jsonl, files.jsonl, roots.jsonl and
 data_pipeline/renames.csv are optional (note when absent, FAIL when present but wrong). MANIFEST paths that
-are absolute or contain `..` are never opened. The check only reads.
+are absolute, contain `..` or have no parts (such as `.`) are never opened. The check only reads.
 
 Every test works on a synthetic folder under tmp_path; the real data/ and data-v1/ are never touched.
 The `cli` tests copy load.py next to a synthetic data/ and run it in a subprocess to check exit codes.
@@ -151,6 +151,17 @@ def test_unsafe_manifest_paths_rejected(tmp_path):
         assert status == "FAIL" and "unsafe path" in detail, p
 
 
+def test_manifest_path_without_parts_is_unsafe(tmp_path):
+    extra = [md5_line(b"x\n", "."), md5_line(b"x\n", "./")]
+    data = make_copy(tmp_path / "repo", extra_lines=extra)
+    rows = run_verify(data)
+    by = rows_by_name(rows)
+    for p in (".", "./"):
+        status, detail = by[p]
+        assert status == "FAIL" and "unsafe path" in detail, p
+    assert sorted(name for _, name, _ in failures(rows)) == [".", "./"]
+
+
 def test_manifest_bom_crlf_and_header_lines(tmp_path):
     data = make_copy(tmp_path, bom=True, crlf=True)
     rows = run_verify(data)
@@ -236,3 +247,11 @@ def test_cli_missing_optional_exit_0_with_note(tmp_path):
     code, lines = cli(tmp_path)
     assert code == 0
     assert any(line.startswith("note: data/models.jsonl") for line in lines)
+
+
+def test_cli_path_without_parts_fails_with_a_row(tmp_path):
+    make_copy(tmp_path, extra_lines=[md5_line(b"x\n", ".")])
+    code, lines = cli(tmp_path)
+    assert code == 1
+    assert any("unsafe path" in line for line in lines)
+    assert "SOME CHECKS FAILED" in lines  # a traceback would leave stdout without it
