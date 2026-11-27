@@ -97,11 +97,13 @@ nulls = [simulate(arrivals_like(load_net("no_swarm")), rule="M0", seed=("rq1", i
 
 `simulate` returns a `Net` with the same nodes, roots, arrival times and number of parents per node as the data, attached at
 random; `rule="M1"` gives preferential attachment on the same schedule (see the docstring of `simulate` for the other rules).
-Its batch step `SIM_STEP = 0.01` is provisional until the RQ2 convergence stage confirms it, so a null drawn today may differ
-slightly from one drawn after that stage; the README and the code will say when it is settled.
+Its batch step is `SIM_STEP = 0.000625`, confirmed by the RQ2 convergence stage (`results/rq2/sim_convergence.csv` on the
+`rq2-growth` branch), calibrated on the full arrival profile only, which holds the largest monthly burst; Phase 8 re-checks it
+under measured parameters and may add the `no_swarm` and `quant_collapsed` profiles.
 
 Runtimes measured on one Windows machine: the two wrappers take about 1 s for 1,000,000 nodes (including building the `Net`); `arrivals_like` takes
-about 0.2 s on a loaded `no_swarm` net and one `simulate` run of rule M0 or M1 about 1.5-2 s on that schedule; `.to_networkx()`
+about 0.2 s on a loaded `no_swarm` net and one `simulate` run on the full schedule at `SIM_STEP = 0.000625` about 1.8 s for
+rule M0 and about 6 s for rule M1, M2 or M3 (a larger `step`, for example 0.01, is faster: M1 about 1.8 s); `.to_networkx()`
 of a 1,000,000-node net takes about 3 s, so build the graph only for small trees and checks.
 
 ## Repository layout
