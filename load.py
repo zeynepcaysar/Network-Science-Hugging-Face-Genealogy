@@ -95,6 +95,7 @@ RESOLUTIONS = ("exact", "month")  # time resolutions of arrivals_like: observed 
 MAX_REDRAWS = 1000  # simulate: rounds of redrawing duplicate parents of one slot before it gives up (reached only with absurdly concentrated weights)
 ETA_KINDS = ("lognormal", "exponential", "empirical")  # fitness specs of simulate: ("lognormal", sigma), ("exponential",), ("empirical", values); or a per-node array (D-12)
 AGING_KINDS = ("exp", "power", "lognormal", "piecewise")  # aging presets of simulate, dt in days since pool entry; plain tuples only, never callables (D-13)
+EXP_REBASE = 32.0  # D-34: simulate moves the reference second of exponential aging to the newest eligible node when that node's factor would pass exp(32), about 8e13, so no factor overflows for any tau > 0
 
 
 def _read(name):
@@ -883,6 +884,15 @@ def _aging_weights(spec, dt_days):
     return values[np.maximum(np.searchsorted(edges, dt, side="right") - 1, 0)]
 
 
+def _exp_aging_factors(sec, ref_sec, tau_days):
+    """float64 factors exp((t_i - t_ref) / tau) for entry seconds sec (int64) and the reference second ref_sec, D-34.
+
+    The factorised exponential aging: exp(-(t - t_i)/tau) = exp((t_i - t_ref)/tau) x exp(-(t - t_ref)/tau), and the second
+    factor is the same for every candidate of a batch, so it cancels in the draw.
+    """
+    return np.exp(((np.asarray(sec, np.int64) - int(ref_sec)) / 86400.0) / float(tau_days))
+
+
 def _family_masks(schedule):
     """(sorted family names, int64 bit mask per root) from the roots' semicolon-joined families strings; no names without root_nodes."""
     nodes = schedule.root_nodes
@@ -998,18 +1008,31 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
     = (1 + dt)^-nu; ("lognormal", mu, sigma) = exp(-(ln(1 + dt) - mu)^2 / (2 sigma^2)) / (1 + dt), the Wang-Song-Barabasi shape
     on the clock 1 + dt; ("piecewise", edges_days, values) a step function (edges start at 0 and increase, values >= 0, not
     all zero). Callables, strings and other objects are refused as eta or aging, so a run is reproducible from a parameter
-    file (D-13). The age is read at the first second of a batch (the undated batch uses the last dated second).
+    file (D-13). For power, lognormal and piecewise aging the age is read at the first second of a batch (the undated batch
+    uses the last dated second); exponential aging is computed in factorised form (D-34, below), where the clock cancels.
 
     Numbers. Weights are float64. A weight, an aged weight or a cumulative total that is not finite raises ValueError
-    ("attachment weights overflow ..."); (k + a)^3 stays finite up to k about 1e100. A pool whose weights are all zero (aging
-    can do that) gives the slot no parent: the slot has depth 0 and is counted in n_m_capped and n_edges_short.
+    ("attachment weights overflow ..."); (k + a)^3 stays finite up to k about 1e100. A pool whose weights are all zero (a
+    piecewise step of 0, or power or lognormal aging that underflows; never exponential aging, D-35) gives the slot no parent:
+    the slot has depth 0 and is counted in n_m_capped and n_edges_short.
+
+    Exponential aging (D-34, D-35). exp(-(t - t_i)/tau) = exp((t_i - t_ref)/tau) x exp(-(t - t_ref)/tau), and the second factor
+    is the same for every candidate of a batch, so it cancels in the draw. Each node's factor exp((t_i - t_ref)/tau) is
+    therefore computed once, when the node first becomes eligible, and stored with its base weight, so a batch only sums
+    stored weights and costs about as much as M2. When the newest eligible node's exponent (t - t_ref)/tau would exceed
+    EXP_REBASE, t_ref moves to that node's second and every eligible factor is recomputed (counted in meta n_aging_rebases),
+    so no factor overflows for any tau > 0. The clock does not matter for exp. An exp-aged pool whose newest eligible node has
+    positive base weight always has a positive weight, because that node's factor is at least 1, so underflow of older
+    candidates cannot empty it: a slot whose newest eligible node is more than about 745 tau older still gets a parent, where
+    the direct form exp(-dt/tau) would underflow every weight to 0 and give none (D-35); a base weight of 0, e.g. a zero
+    fitness, stays a true zero. Only gaps above about 745 tau (367 years at tau = 180 days) are affected.
 
     Batches (D-05). The events are the entering roots and all slots, merged by (second, roots before slots, node index). A
     batch closes once its events reach step x the current pool (at least one event), is extended to the end of a timestamp
     group, and is never cut inside a second; dated events and undated slots never share a batch. The eligible pool of every
     arrival is the set of nodes that entered in an earlier second (strictly earlier, as in the estimator, P2 D-02), so nodes
     of the same second never parent each other and a node is never a parent inside its own batch. Degrees update after each
-    batch, and the aging clock is read at the batch's first second. step=0 forces one arrival per batch: the slots of a second
+    batch, and the aging clock of power, lognormal and piecewise aging is read at the batch's first second. step=0 forces one arrival per batch: the slots of a second
     then draw in schedule order, each seeing the degree updates of the earlier ones (never each other as parents). That is
     the reference mode for tests and small n; it runs one Python iteration per event, so it is slow at scale. step=SIM_STEP
     (1%) is provisional until rq2_growth/sim_convergence.py confirms it.
@@ -1032,7 +1055,7 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
     attributes; every other node is sim:NNNNNNN. A child takes author and is_swarm of its slot, families = the sorted
     semicolon-joined union of its parents' families (at most 62 distinct root families), created_at from its second, and the
     frame always has is_root, delayed, entry_sec (= node_sec) and depth (1 + the smallest parent depth, roots 0). meta has
-    source "sim", rule, a, beta, eta, aging, step, seed (the label tuple), numpy, schedule and the counters above plus n_batches.
+    source "sim", rule, a, beta, eta, aging, step, seed (the label tuple), numpy, schedule and the counters above plus n_batches and n_aging_rebases (0 without exponential aging).
 
     Age clock limitation (D-14) and the delayed flag. A simulated root's node_sec is its entry second, so load.pool_entry(sim)
     reports no delayed node, while nodes["delayed"] keeps the source root's real flag for stratifying. Entry seconds agree
@@ -1062,6 +1085,7 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
     et, ek = node_sec[eng], is_slot[eng]
     eta_ev = None if eta_node is None else eta_node[eng]  # fitness by engine position
     uniform = beta == 0.0 and eta_ev is None and aging is None  # equal weights: floor(u * pool) instead of a cumulative-weight search
+    exp_aging = aging is not None and aging[0] == "exp"  # factorised: each node's factor is computed once, not once per batch (D-34)
     n_events = len(eng)
     n_dated = int(np.searchsorted(et, NO_TIME, side="left"))
     first_group = int(np.searchsorted(et, et[0], side="right")) if n_events else 0
@@ -1069,6 +1093,10 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
     offset = np.cumsum(schedule.slot_m) - schedule.slot_m  # start of each slot's rel codes
     deg = np.zeros(n_events, np.int64)
     w0 = np.zeros(n_events, np.float64)  # base weight (k + a)^beta of the events, updated for changed parents only
+    g_exp = np.zeros(n_events if exp_aging else 0, np.float64)  # exp aging: factor exp((t_i - t_ref)/tau) of the nodes aged so far
+    w_exp = np.zeros(n_events if exp_aging else 0, np.float64)  # exp aging: w0 * g_exp, the weights a batch sums
+    t_ref = int(et[0]) if n_events else 0  # exp aging: reference second of the factors, moved by a rebase
+    n_aged = n_rebases = 0  # exp aging: positions with a factor so far (a prefix of the pool), and rebases done
     with np.errstate(over="ignore"):  # an overflow shows up as an infinite weight, which the batch loop turns into a ValueError
         base = float(np.float64(a) ** beta)
     parents, children, rels = [], [], []
@@ -1093,9 +1121,18 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
                 c, n_pos = None, pool
             else:
                 with np.errstate(over="ignore", invalid="ignore"):  # a non-finite weight is reported below as an overflow
-                    w = w0[:pool]
-                    if aging is not None:  # age in days at the batch's first second (undated batch: the last dated second)
-                        w = w * _aging_weights(aging, ((et[i] if i < n_dated else et[n_dated - 1]) - et[:pool]) / 86400.0)
+                    if exp_aging:
+                        if pool > n_aged:  # new candidates: factors once, after a rebase when the newest exponent would pass EXP_REBASE
+                            if (et[pool - 1] - t_ref) / 86400.0 / aging[1] > EXP_REBASE:
+                                t_ref, n_aged, n_rebases = int(et[pool - 1]), 0, n_rebases + 1
+                            g_exp[n_aged:pool] = _exp_aging_factors(et[n_aged:pool], t_ref, aging[1])
+                            w_exp[n_aged:pool] = w0[n_aged:pool] * g_exp[n_aged:pool]
+                            n_aged = pool
+                        w = w_exp[:pool]
+                    else:
+                        w = w0[:pool]
+                        if aging is not None:  # age in days at the batch's first second (undated batch: the last dated second)
+                            w = w * _aging_weights(aging, ((et[i] if i < n_dated else et[n_dated - 1]) - et[:pool]) / 86400.0)
                     c = np.cumsum(w)
                 if not np.isfinite(c[-1]):
                     raise ValueError(f"attachment weights overflow (a={a}, beta={beta}): a weight or the cumulative total is not finite; lower beta or a")
@@ -1121,6 +1158,9 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
             deg[who] += cnt
             with np.errstate(over="ignore"):
                 w0[who] = (deg[who] + a) ** beta if eta_ev is None else eta_ev[who] * (deg[who] + a) ** beta
+            if exp_aging:
+                with np.errstate(over="ignore", invalid="ignore"):  # an infinite base weight times a zero factor is nan: reported as an overflow
+                    w_exp[who] = w0[who] * g_exp[who]
             child_of_draw, parent_of_draw = slot_node[slot_of], eng[src]
             low = np.full(len(slots), np.iinfo(np.int64).max)
             np.minimum.at(low, slot_of, depth[parent_of_draw])
@@ -1143,7 +1183,7 @@ def simulate(schedule, rule=None, *, a=1.0, beta=None, eta=None, aging=None, ste
     meta = {"source": "sim", "rule": rule_name, "a": a, "beta": beta, "eta": eta_meta, "aging": aging, "step": step, "seed": labels,
             "numpy": np.__version__,
             "schedule": schedule.meta, "n_batches": n_batches, "n_bootstrap_edges": n_bootstrap, "n_m_capped": n_capped,
-            "n_edges_short": n_short, "n_undated_slots": int((schedule.slot_sec == NO_TIME).sum()),
+            "n_edges_short": n_short, "n_aging_rebases": n_rebases, "n_undated_slots": int((schedule.slot_sec == NO_TIME).sum()),
             "n_never_entering_roots": int((schedule.root_sec == NO_TIME).sum())}
     return _sim_net(schedule, parent, child, rel, depth, mask, fam_names, meta, eta=eta_node)
 
