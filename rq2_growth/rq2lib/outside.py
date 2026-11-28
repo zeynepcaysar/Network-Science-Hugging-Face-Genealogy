@@ -31,6 +31,16 @@ OUTSIDE_COLUMNS = ("id", "status", "resolved_id", "downloads_30d", "downloads_al
 RAW_DEFAULT = Path(__file__).resolve().parents[2] / "data-outside" / "raw_hub_fetch.parquet"  # out-of-band raw fetch (git-ignored)
 SIZE_PARQUET = official.EXTERNAL / "model_size.parquet"
 OUTSIDE_PARQUET = official.EXTERNAL / "outside_measures.parquet"
+POPULARITY_COLUMNS = ("downloads_30d", "downloads_all_time", "likes")  # values that belong to the fetch date (D-05, D-16)
+MAX_FETCH_SPAN_DAYS = 3  # D-16: widest allowed gap in calendar days (UTC) between the first and the last popularity fetch
+FETCH_WINDOW_RULE = ("All popularity values (downloads_30d, downloads_all_time, likes) come from one fetch window: span_days "
+                     "is the UTC calendar date of the last fetched_at minus that of the first, over the rows that carry any "
+                     "of the three values. A span above MAX_FETCH_SPAN_DAYS = 3 fails the freeze and --check; the reported "
+                     "fetch date is the window start (D-16, bounds D-05).")  # copy of the fetcher's text (equality is tested)
+OFFICIAL_RULE = ("A node is official when the frozen official list (uploader rule of D-09) marks it official in any of its "
+                 "families; is_root when the list marks it a root in any; mirror_of is the first non-empty mirror_of in the order "
+                 "Qwen, Llama, Mistral, Gemma; official_families names the families in which it is official, in that order. "
+                 "Nodes outside the four families, and alias-only ids, have official and is_root NA, never False.")
 
 
 # ---------------------------------------------------------------- files
@@ -112,21 +122,54 @@ def official_columns(ids, families, official_df):
     """Per node: official, is_root (nullable boolean), mirror_of and official_families, as a frame aligned to ids by position.
 
     ids and families are parallel sequences (families as in nodes.csv, ';'-separated, empty for no family); official_df is the
-    frame read_official() returns. A node with families is official when the frozen list marks it official in any of them;
-    a node without families gets NA. This commit fills official; is_root, mirror_of and official_families come next.
+    frame read_official() returns, one row per (id, family). A node with families is official when the list marks it official
+    in any of them (OFFICIAL_RULE); a node without families gets NA in official and is_root, never False.
     """
     ids = pd.Series(list(ids), dtype=object)
     fam = pd.Series(list(families), dtype=object).fillna("")
-    in_any = (fam != "").to_numpy(bool)
-    flag = np.zeros(len(ids), bool)
+    n = len(ids)
+    has_family = (fam != "").to_numpy(bool)
+    is_official, is_root = np.zeros(n, bool), np.zeros(n, bool)
+    mirror = np.full(n, "", dtype=object)
+    names = np.full(n, "", dtype=object)
     for family in official.ORG:
         in_family = (";" + fam + ";").str.contains(f";{family};", regex=False).to_numpy(bool)
-        rows = official_df[(official_df["family"] == family) & official_df["official"]]
-        flag |= in_family & ids.isin(set(rows["id"])).to_numpy(bool)
-    none = np.zeros(len(ids), bool)
+        rows = official_df[official_df["family"] == family]
+        listed = rows[rows["official"]]
+        in_official = in_family & ids.isin(set(listed["id"])).to_numpy(bool)
+        is_official |= in_official
+        is_root |= in_family & ids.isin(set(rows.loc[rows["is_root"], "id"])).to_numpy(bool)
+        for i in np.flatnonzero(in_official):
+            names[i] = family if not names[i] else f"{names[i]};{family}"
+        mirrors = {k: v for k, v in zip(rows["id"], rows["mirror_of"]) if v}
+        for i in np.flatnonzero(in_family & (mirror == "") & ids.isin(set(mirrors)).to_numpy(bool)):
+            mirror[i] = mirrors[ids.iat[i]]
     return pd.DataFrame({
-        "official": pd.arrays.BooleanArray(flag, ~in_any),
-        "is_root": pd.arrays.BooleanArray(none, np.ones(len(ids), bool)),
-        "mirror_of": pd.Series([""] * len(ids), dtype=str),
-        "official_families": pd.Series([""] * len(ids), dtype=str),
+        "official": pd.arrays.BooleanArray(is_official, ~has_family),
+        "is_root": pd.arrays.BooleanArray(is_root, ~has_family),
+        "mirror_of": pd.Series(mirror, dtype=str),
+        "official_families": pd.Series(names, dtype=str),
     })
+
+
+# ---------------------------------------------------------------- fetch window (D-16)
+def fetch_window(frame):
+    """The D-16 fetch window over the rows that carry any popularity value: first, last, span_days, max_span_days, n_rows, rule.
+
+    Raises ValueError when such a row has no fetched_at. A frame without such rows gives empty first and last and span 0.
+    Works on the raw fetch and on the frozen outside table alike (both have the popularity columns and fetched_at).
+    """
+    has = frame[list(POPULARITY_COLUMNS)].notna().any(axis=1)
+    rows = frame[has]
+    window = {"first": "", "last": "", "span_days": 0, "max_span_days": MAX_FETCH_SPAN_DAYS, "n_rows": int(len(rows)),
+              "rule": FETCH_WINDOW_RULE}
+    if rows.empty:
+        return window
+    text = rows["fetched_at"].astype(str)
+    if (text.str.strip() == "").any():
+        raise ValueError(f"{int((text.str.strip() == '').sum()):,} rows with popularity values have no fetched_at - "
+                         "the fetch window cannot be checked (D-16)")
+    when = pd.to_datetime(text, utc=True, format="ISO8601")
+    first, last = when.min(), when.max()
+    window.update(first=first.isoformat(), last=last.isoformat(), span_days=int((last.date() - first.date()).days))
+    return window
