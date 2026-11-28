@@ -1,0 +1,77 @@
+{
+  "counts": {
+    "n_official": 646,
+    "n_rows": 968600,
+    "n_with_downloads_all_time": 960765
+  },
+  "downloads_le_all_time_share": 1.0,
+  "downloads_semantics": "downloads is 'Number of downloads of the model over the last 30 days.' and downloads_all_time is 'Cumulated number of downloads of the model since its creation.' (both sentences from the huggingface_hub 2.4.0 ModelInfo docstring; reference https://huggingface.co/docs/huggingface_hub/package_reference/hf_api). The Hub page https://huggingface.co/docs/hub/models-download-stats defines how a download is counted, not the window. Probe of black-forest-labs/FLUX.1-dev on 2026-11-27: downloads 400,392 against downloadsAllTime 34,852,744, so the two counts differ by orders of magnitude. A 2026 forum report saw downloadsAllTime decrease from one day to the next (https://discuss.huggingface.co/t/downloadsalltime-decreasing-day-over-day-for-multiple-public-models-expected-behavior/176918); it is used here as the cumulative count at the fetch date, and any decrease is documented, not corrected. Both counts are popularity outcomes used as correlates only, never as fitness ground truth.",
+  "fetch_date": "2026-11-27",
+  "fetch_window": {
+    "first": "2026-11-27T22:15:28+00:00",
+    "last": "2026-11-28T12:33:22+00:00",
+    "max_span_days": 3,
+    "n_rows": 960765,
+    "rule": "All popularity values (downloads_30d, downloads_all_time, likes) come from one fetch window: span_days is the UTC calendar date of the last fetched_at minus that of the first, over the rows that carry any of the three values. A span above MAX_FETCH_SPAN_DAYS = 3 fails the freeze and --check; the reported fetch date is the window start (D-16, bounds D-05).",
+    "span_days": 1
+  },
+  "flux_in_fetch": {
+    "downloads_30d": 400392,
+    "downloads_all_time": 34852744
+  },
+  "freeze_date": "2026-11-28",
+  "inputs": {
+    "data/MANIFEST.txt": "2c5880de5623fc62d9d8372a8bf638da",
+    "data/edges.csv": "7badbaae00a7e6525116ae6ceff150d0",
+    "data/nodes.csv": "97c0069fbefe46d4828599f3659633a9"
+  },
+  "limitations": [
+    "Open LLM Leaderboard and Hub leaderboard overlap are limitations only; a benchmark check is deferred (EXTRA-04)",
+    "downloads and likes belong to the fetch date, later than the 5 Nov snapshot of the v1 data; they are never mixed with v1's own downloads and likes columns"
+  ],
+  "loader": "load.load_tables(\"full\", aliases=True), load.load_net(\"full\")",
+  "official_list_md5": "01d6d1243b17a5a6a1990ad15b636fac",
+  "official_rule": "A node is official when the frozen official list (uploader rule of D-09) marks it official in any of its families; is_root when the list marks it a root in any; mirror_of is the first non-empty mirror_of in the order Qwen, Llama, Mistral, Gemma; official_families names the families in which it is official, in that order. Nodes outside the four families, and alias-only ids, have official and is_root NA, never False. It is taken from the list frozen for the pilot, no new definition; non-family nodes NA, D-07.",
+  "parquet_md5": "abe9cd9c2763da6b90714ae8cbd5ccf4",
+  "parquet_name": "outside_measures.parquet",
+  "preregistration_note": "fixed in discuss-phase D-06 on 2026-11-27, before any fitness estimate existed; age-normalised in Phase 6; another measure can only be added as a labelled secondary",
+  "primary_popularity_correlate": "downloads_all_time",
+  "raw_fetch": {
+    "authenticated": false,
+    "counts_by_status": {
+      "invalid_id": 1,
+      "not_found": 7834,
+      "ok": 959578,
+      "renamed": 1187
+    },
+    "fallback_runs": [
+      {
+        "calls": 96,
+        "finished_utc": "2026-11-28T12:33:23+00:00",
+        "started_utc": "2026-11-28T12:33:07+00:00"
+      }
+    ],
+    "fetch_date": "2026-11-27",
+    "fetch_window": {
+      "first": "2026-11-27T22:15:28+00:00",
+      "last": "2026-11-28T12:33:22+00:00",
+      "max_span_days": 3,
+      "n_rows": 960765,
+      "rule": "All popularity values (downloads_30d, downloads_all_time, likes) come from one fetch window: span_days is the UTC calendar date of the last fetched_at minus that of the first, over the rows that carry any of the three values. A span above MAX_FETCH_SPAN_DAYS = 3 fails the freeze and --check; the reported fetch date is the window start (D-16, bounds D-05).",
+      "span_days": 1
+    },
+    "freeze_date": "2026-11-28",
+    "huggingface_hub_version": "2.4.0",
+    "listing_finished_utc": "2026-11-27T22:43:29+00:00",
+    "listing_started_utc": "2026-11-27T22:15:28+00:00",
+    "n_ids": 968600,
+    "test_run": false
+  },
+  "raw_md5": "6cfaa4f34ba76fd311ca01abf68fa9d2",
+  "raw_name": "raw_hub_fetch.parquet",
+  "script": "rq2_growth/build_outside_measures.py",
+  "secondary_popularity_correlates": [
+    "downloads_30d",
+    "likes"
+  ]
+}

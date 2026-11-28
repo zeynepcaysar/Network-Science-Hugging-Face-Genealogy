@@ -1,0 +1,72 @@
+{
+  "counts": {
+    "gguf": 1752,
+    "missing": 39639,
+    "n_rows": 968600,
+    "parent:adapter": 391575,
+    "parent:finetune": 37004,
+    "parent:merge": 134,
+    "parent:quantized": 190158,
+    "parent:unknown": 5,
+    "parent:untyped_adapter": 7153,
+    "regex": 20130,
+    "safetensors": 281050
+  },
+  "freeze_date": "2026-11-28",
+  "inputs": {
+    "data/MANIFEST.txt": "2c5880de5623fc62d9d8372a8bf638da",
+    "data/edges.csv": "7badbaae00a7e6525116ae6ceff150d0",
+    "data/nodes.csv": "97c0069fbefe46d4828599f3659633a9"
+  },
+  "loader": "load.load_tables(\"full\", aliases=True), load.load_net(\"full\")",
+  "max_passes": 100,
+  "n_mixed_rel_nodes": 61,
+  "n_passes": 14,
+  "n_untyped_adapter": 7153,
+  "parquet_md5": "b39971ede151e201cb96d275ab9c1791",
+  "parquet_name": "model_size.parquet",
+  "raw_fetch": {
+    "authenticated": false,
+    "counts_by_status": {
+      "invalid_id": 1,
+      "not_found": 7834,
+      "ok": 959578,
+      "renamed": 1187
+    },
+    "fallback_runs": [
+      {
+        "calls": 96,
+        "finished_utc": "2026-11-28T12:33:23+00:00",
+        "started_utc": "2026-11-28T12:33:07+00:00"
+      }
+    ],
+    "fetch_date": "2026-11-27",
+    "fetch_window": {
+      "first": "2026-11-27T22:15:28+00:00",
+      "last": "2026-11-28T12:33:22+00:00",
+      "max_span_days": 3,
+      "n_rows": 960765,
+      "rule": "All popularity values (downloads_30d, downloads_all_time, likes) come from one fetch window: span_days is the UTC calendar date of the last fetched_at minus that of the first, over the rows that carry any of the three values. A span above MAX_FETCH_SPAN_DAYS = 3 fails the freeze and --check; the reported fetch date is the window start (D-16, bounds D-05).",
+      "span_days": 1
+    },
+    "freeze_date": "2026-11-28",
+    "huggingface_hub_version": "2.4.0",
+    "listing_finished_utc": "2026-11-27T22:43:29+00:00",
+    "listing_started_utc": "2026-11-27T22:15:28+00:00",
+    "n_ids": 968600,
+    "test_run": false
+  },
+  "raw_md5": "6cfaa4f34ba76fd311ca01abf68fa9d2",
+  "raw_name": "raw_hub_fetch.parquet",
+  "rules": {
+    "confidence": "HIGH for an own safetensors or gguf total, MEDIUM for a regex size; an inherited size has the confidence of the node whose own value it is; empty for a missing size.",
+    "inheritance": "A node with an adapter or quantized in-edge (the corrected rel of the net, never rel_declared) takes its parents' derived size whatever its own counts say, source parent:adapter (parent:quantized when it has no adapter edge); all such parents must be sized and agree, otherwise the size is missing. Any other node keeps its own tier and, only when it has none, takes the size of its parents over all in-edges (all must be sized and agree, so a merge is sized only when its parents agree), source parent:merge if any in-edge is a merge, else parent:unknown, else parent:finetune. Derived sizes travel up the chain in passes over the edges until nothing changes; more than MAX_PASSES passes raise ValueError.",
+    "mixed_rel": "A node with at least one adapter or quantized in-edge uses only those in-edges, even when it also has finetune, merge or unknown in-edges; the number of such nodes is n_mixed_rel_nodes.",
+    "moe": "is_moe and params_active come from the name parse of the node whose value is used (the node itself, or the ancestor whose own value was inherited). A name with an active count (30b-a3b) gives params_active; every other node has NA.",
+    "regex": "parse_name_size reads only the repo part after the last '/', lower-cased. An underscore decimal (qwen3-0_6b) is read as a dot decimal first. A total with an active count (30b-a3b) gives total and active and is_moe; else a count form (8x7b) gives the product and is_moe, with no active count because the routing top-k is not in the name. Otherwise the distinct plain 'number b' values decide: two different values are ambiguous and give no size, one value is the size, none falls back to an effective form (e4b), then to a single 'number m' value (millions, so a context suffix like -1M never wins over a B size). A size is a number with no letter, digit or dot before it and no letter or digit after its unit, so 4bit, 6.0bpw, q4_k_m, int4, w4a16, nvfp4, A3B alone, version numbers and k-suffixes give no size. Documented misses: a size with no separator before it (mistral7b). Zero and numbers beyond six digits give no size.",
+    "tier_order": "Own tiers, the first that applies: safetensors total above zero (confidence HIGH), gguf total above zero (HIGH), repo-name regex (MEDIUM). A total of zero or none counts as no count. size_source names the tier; the raw safetensors, gguf and regex values stay in own_params_safetensors, own_params_gguf and regex_params for every node.",
+    "untyped_adapter": "A node whose only in-edge is a finetune or unknown edge and whose own safetensors or gguf count is strictly below UNTYPED_ADAPTER_SHARE (0.10) of its parent's derived size takes the parent's size, source parent:untyped_adapter, is_untyped_adapter True. At exactly 10% it keeps its own count. A regex-only own size never triggers the rule."
+  },
+  "script": "rq2_growth/build_outside_measures.py",
+  "untyped_adapter_share": 0.1
+}
