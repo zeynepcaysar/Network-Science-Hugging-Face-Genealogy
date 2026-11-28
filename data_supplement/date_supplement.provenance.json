@@ -1,0 +1,222 @@
+{
+  "agreement": {
+    "1_to_30_days": 50,
+    "max_abs_days": 672.9126736111111,
+    "n_compared": 919187,
+    "n_equal": 919108,
+    "over_30_days": 28,
+    "share_equal": 0.9999140544851047,
+    "under_1_day": 1
+  },
+  "counts": {
+    "by_status": {
+      "invalid_id": 1,
+      "not_found": 3820,
+      "ok": 41113,
+      "renamed": 465
+    },
+    "by_v1_reason": {
+      "backfilled": 339,
+      "no_metadata": 45060
+    },
+    "phantom_roots": 8,
+    "placeholder_dates": 3300,
+    "real_dates": 38278,
+    "rows": 45399,
+    "shared_repo": 465,
+    "still_missing": 3821
+  },
+  "coverage": [
+    {
+      "edge_set": "family",
+      "edges": 444353,
+      "share_after_date": 0.0013907861542512372,
+      "share_after_missing": 0.001393036617284006,
+      "share_before": 0.019603783478450692,
+      "undated_after_date": 618,
+      "undated_after_missing": 619,
+      "undated_before": 8711,
+      "version": "full"
+    },
+    {
+      "edge_set": "non_family",
+      "edges": 510258,
+      "share_after_date": 0.021018778735463237,
+      "share_after_missing": 0.22595236135445207,
+      "share_before": 0.8164438382151774,
+      "undated_after_date": 10725,
+      "undated_after_missing": 115294,
+      "undated_before": 416597,
+      "version": "full"
+    },
+    {
+      "edge_set": "all",
+      "edges": 954611,
+      "share_after_date": 0.011882326937359826,
+      "share_after_missing": 0.12142432886275142,
+      "share_before": 0.4455301688331687,
+      "undated_after_date": 11343,
+      "undated_after_missing": 115913,
+      "undated_before": 425308,
+      "version": "full"
+    },
+    {
+      "edge_set": "family",
+      "edges": 341718,
+      "share_after_date": 0.0018085087703896194,
+      "share_after_missing": 0.0018114351599857192,
+      "share_before": 0.025491779771624555,
+      "undated_after_date": 618,
+      "undated_after_missing": 619,
+      "undated_before": 8711,
+      "version": "no_swarm"
+    },
+    {
+      "edge_set": "non_family",
+      "edges": 510258,
+      "share_after_date": 0.021018778735463237,
+      "share_after_missing": 0.22595236135445207,
+      "share_before": 0.8164438382151774,
+      "undated_after_date": 10725,
+      "undated_after_missing": 115294,
+      "undated_before": 416597,
+      "version": "no_swarm"
+    },
+    {
+      "edge_set": "all",
+      "edges": 851976,
+      "share_after_date": 0.013313755317051184,
+      "share_after_missing": 0.13605195451515067,
+      "share_before": 0.4992018554513273,
+      "undated_after_date": 11343,
+      "undated_after_missing": 115913,
+      "undated_before": 425308,
+      "version": "no_swarm"
+    },
+    {
+      "edge_set": "family",
+      "edges": 358445,
+      "share_after_date": 0.0017185342242184993,
+      "share_after_missing": 0.0017213240525045684,
+      "share_before": 0.024335672139379823,
+      "undated_after_date": 616,
+      "undated_after_missing": 617,
+      "undated_before": 8723,
+      "version": "quant_collapsed"
+    },
+    {
+      "edge_set": "non_family",
+      "edges": 397784,
+      "share_after_date": 0.016601974941174106,
+      "share_after_missing": 0.27125525410775697,
+      "share_before": 0.8504087645556382,
+      "undated_after_date": 6604,
+      "undated_after_missing": 107901,
+      "undated_before": 338279,
+      "version": "quant_collapsed"
+    },
+    {
+      "edge_set": "all",
+      "edges": 756229,
+      "share_after_date": 0.009547372555138722,
+      "share_after_missing": 0.14349886079481217,
+      "share_before": 0.45885836168673777,
+      "undated_after_date": 7220,
+      "undated_after_missing": 108518,
+      "undated_before": 347002,
+      "version": "quant_collapsed"
+    }
+  ],
+  "csv_md5": "3c9c2fd9959f2875c68f2efe85baf68c",
+  "csv_name": "date_supplement.csv",
+  "freeze_date": "2026-11-28",
+  "helper": "net = load.load_net(\"full\"); sec = load.supplement_sec(net, placeholder=\"missing\", path=None)  # or placeholder=\"date\"; entry, delayed = load.pool_entry(net, node_sec=sec)",
+  "inputs": {
+    "data/MANIFEST.txt": "2c5880de5623fc62d9d8372a8bf638da",
+    "data/edges.csv": "7badbaae00a7e6525116ae6ceff150d0",
+    "data/edges_quant_collapsed.csv": "0909e6706ebbf68945c904a98b201484",
+    "data/nodes.csv": "97c0069fbefe46d4828599f3659633a9"
+  },
+  "notes": [
+    "downloads_30d, downloads_all_time and likes belong to the fetch date, later than the 5 Nov snapshot.",
+    "The v1 files are unchanged; the supplement only adds dates v1 lacks.",
+    "An id that stays undated, or gets a placeholder date under the default, keeps delayed entry in pool_entry (it enters at its first child); a filled date later than the first child still gives delayed entry (D-11)."
+  ],
+  "raw_fetch": {
+    "authenticated": false,
+    "fallback_runs": [
+      {
+        "calls": 96,
+        "finished_utc": "2026-11-28T12:33:23+00:00",
+        "started_utc": "2026-11-28T12:33:07+00:00"
+      }
+    ],
+    "fetch_date": "2026-11-27",
+    "fetch_window": {
+      "first": "2026-11-27T22:15:28+00:00",
+      "last": "2026-11-28T12:33:22+00:00",
+      "max_span_days": 3,
+      "n_rows": 960765,
+      "rule": "All popularity values (downloads_30d, downloads_all_time, likes) come from one fetch window: span_days is the UTC calendar date of the last fetched_at minus that of the first, over the rows that carry any of the three values. A span above MAX_FETCH_SPAN_DAYS = 3 fails the freeze and --check; the reported fetch date is the window start (D-16, bounds D-05).",
+      "span_days": 1
+    },
+    "huggingface_hub_version": "2.4.0",
+    "listing_finished_utc": "2026-11-27T22:43:29+00:00",
+    "listing_sort": "default",
+    "listing_started_utc": "2026-11-27T22:15:28+00:00",
+    "test_run": false
+  },
+  "raw_md5": "6cfaa4f34ba76fd311ca01abf68fa9d2",
+  "raw_name": "raw_hub_fetch.parquet",
+  "rules": {
+    "coverage_rule": "Share of edges whose parent has no date, before the supplement and after it, with the placeholder kept missing and with the placeholder used, for each network version and for the edge sets family (the child is in a family), non_family and all. PROJECT.md's 81.6% is the non-family share before the supplement; the share over all edges of the full version is reported separately, as the D-14 wording of SC5 states (D-15).",
+    "fill_rule": "A fetched createdAt fills only ids whose v1 created_at is missing (alias-only ids included) and never replaces a v1 date (D-11). created_at is the raw fetched value for status ok and renamed and empty for not_found, no_access, invalid_id, error and not_fetched. Ids that already have a v1 date are only compared (agreement).",
+    "phantom_candidates": {
+      "Qwen/Qwen-1_8B-Chat": [
+        "Qwen/Qwen1.5-1.8B-Chat"
+      ],
+      "Qwen/Qwen2.5-VL-9B": [],
+      "Qwen/Qwen3-32B-Instruct": [
+        "Qwen/Qwen3-32B"
+      ],
+      "Qwen/Qwen3-8B-Instruct": [
+        "Qwen/Qwen3-8B"
+      ],
+      "Qwen/Qwen3.6-27B-MTP": [
+        "Qwen/Qwen3.6-27B"
+      ],
+      "Qwen/Qwen3___5-4B": [
+        "Qwen/Qwen3.5-4B"
+      ],
+      "google/gemma-3-4b": [
+        "google/gemma-3-4b-pt",
+        "google/gemma-3-4b-it"
+      ],
+      "meta-llama/Llama-3-8B": [
+        "meta-llama/Meta-Llama-3-8B"
+      ]
+    },
+    "phantom_rule": "An undated family root (families non-empty, generation 0, created_at missing in v1) is a row with an empty created_at when the Hub does not return it, and a note with its status, the probe date and the first candidate of PHANTOM_CANDIDATES that the fetch returned with status ok. No date is ever filled by hand (D-13); these ids stay on delayed entry.",
+    "placeholder_rule": "The Hub stores 2022-03-02 as its lowest creation date for models older than its date records (v1 blanks it as BACKFILL_DATE). date_is_placeholder is True when the fetched created_at starts with 2022-03-02; the raw value is stored unchanged. load.supplement_sec(placeholder='missing') (default) keeps such a date missing, so the id stays on delayed entry; placeholder='date' uses it, the labelled sensitivity run (D-15).",
+    "rename_rule": "A renamed id (the Hub redirects it to another repo) takes the redirected repo's createdAt, the date of the original upload; resolved_id names the repo. Two or more v1 ids whose resolved_id is the same repo (compared lower-cased) are all flagged shared_repo and all keep the date (D-12). Deleted, private or gated ids stay missing."
+  },
+  "script": "data_supplement/build_date_supplement.py",
+  "source": {
+    "expand": [
+      "createdAt",
+      "safetensors",
+      "gguf",
+      "downloads",
+      "downloadsAllTime",
+      "likes",
+      "childrenModelCount",
+      "gated",
+      "author",
+      "disabled",
+      "private"
+    ],
+    "fallback": "HfApi.model_info(id, expand=..., timeout=30) for every v1 id the listing did not return",
+    "huggingface_hub_version": "2.4.0",
+    "listing": "HfApi.list_models(expand=...) over the whole Hub, kept for v1 ids"
+  }
+}

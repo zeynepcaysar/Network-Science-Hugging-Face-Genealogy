@@ -51,14 +51,62 @@ the labelled sensitivity run. Any other value raises `ValueError`. `path=` point
 
 A fetched date fills only ids v1 has no date for; for the others the fetched date is compared with v1 and the agreement is
 reported. The undated family roots (repos named by a family prefix that do not exist on the Hub) are documented in `note` and
-stay undated, they are never given a date by hand. Their number and list come with the real build.
+stay undated, they are never given a date by hand. The 8 of them are listed below.
+
+## What the frozen supplement contains
+
+Frozen 2026-11-28 from the one-time Hub pass (anonymous, no token). `date_supplement.csv` md5 `3c9c2fd9959f2875c68f2efe85baf68c`;
+the raw fetch `raw_hub_fetch.parquet` md5 `6cfaa4f34ba76fd311ca01abf68fa9d2` (out of band, see below).
+
+- **45,399 rows**, one per id of `nodes.csv` without a v1 `created_at` (45,060 with no metadata in the snapshot, 339 backfilled).
+- By status: `ok` 41,113, `renamed` 465, `not_found` 3,820, `invalid_id` 1. 465 ids are flagged `shared_repo` (130 `ok`, 335 `renamed`: two v1 ids
+  resolve to one repo) and all keep the date.
+- **38,278 real Hub dates**, **3,300 placeholder dates** (`2022-03-02`, flagged `date_is_placeholder`), **3,821 still missing**
+  (3,820 `not_found` plus the one `invalid_id`; this includes the 8 undated family roots).
+- Fetch window (D-16): first `fetched_at` 2026-11-27T22:15:28Z, last 2026-11-28T12:33:22Z, span 1 day (limit 3). The popularity
+  columns (`downloads_30d`, `downloads_all_time`, `likes`) belong to the fetch date 2026-11-27, not to the 5 Nov snapshot.
+- Agreement with v1 on the 919,187 ids that have both dates and a non-placeholder fetched date: 919,108 equal at second
+  resolution, share **0.99991** (1 differs by under a day, 50 by 1 to 30 days, 28 by more than 30 days, at most 673 days; in all 79
+  the fetched date is later than v1's, 77 of them in November 2026, after the 5 Nov snapshot). Every difference is in
+  `results/data/date_supplement_disagreements.csv`. A fetched date never replaces a v1 date.
+
+### The 8 undated family roots (D-13)
+
+These repo ids appear as family roots in the v1 network but the Hub returns "repository not found" (they are typos or non-existent
+ids, or deleted or private; truly gated repos such as `meta-llama/Llama-3.1-8B` answer anonymously). They stay undated, so they
+stay on delayed entry in `pool_entry`, and they remain official roots in the frozen list. The "likely intended" repo is a note
+only: it is named only when the fetch returned it, and it never supplies a date. They matter for root counts (8 of the 272
+family roots are phantom ids).
+
+| id | child edges in `full` | note |
+| --- | --- | --- |
+| `Qwen/Qwen-1_8B-Chat` | 12 | not_found, probed 2026-11-27; likely intended `Qwen/Qwen1.5-1.8B-Chat` |
+| `Qwen/Qwen3-8B-Instruct` | 4 | not_found, probed 2026-11-27; likely intended `Qwen/Qwen3-8B` |
+| `Qwen/Qwen3-32B-Instruct` | 4 | not_found, probed 2026-11-27; likely intended `Qwen/Qwen3-32B` |
+| `Qwen/Qwen3___5-4B` | 2 | not_found, probed 2026-11-27; likely intended `Qwen/Qwen3.5-4B` |
+| `meta-llama/Llama-3-8B` | 1 | not_found, probed 2026-11-27; likely intended `meta-llama/Meta-Llama-3-8B` |
+| `google/gemma-3-4b` | 1 | not_found, probed 2026-11-27; likely intended `google/gemma-3-4b-pt` |
+| `Qwen/Qwen3.6-27B-MTP` | 1 | not_found, probed 2026-11-27; likely intended `Qwen/Qwen3.6-27B` |
+| `Qwen/Qwen2.5-VL-9B` | 1 | not_found, probed 2026-11-28; none identified in the fetch |
+
+Together they carry 26 child edges (0.006% of the family edges).
 
 ## Coverage
 
 The share of edges whose parent still has no date, before and after the supplement, with the placeholder kept missing and with
 the placeholder used, for `full`, `no_swarm` and `quant_collapsed` and for the edge sets family (the child is in a family),
-non-family and all, is in `date_supplement.provenance.json` (key `coverage`) and in `results/data/date_supplement_coverage.csv`.
-`results/data/date_supplement_disagreements.csv` lists every id whose fetched date differs from the v1 date.
+non-family and all, is in `date_supplement.provenance.json` (key `coverage`) and in `results/data/date_supplement_coverage.csv`
+(the numbers below are the `full` rows; `no_swarm` and `quant_collapsed` are in the CSV).
+
+| `full`, edges with an undated parent | edges | before | after, placeholder missing (default) | after, placeholder used |
+| --- | --- | --- | --- | --- |
+| family (the child is in a family) | 444,353 | 1.96% (8,711) | 0.14% (619) | 0.14% (618) |
+| non-family | 510,258 | 81.64% (416,597) | 22.60% (115,294) | 2.10% (10,725) |
+| all | 954,611 | 44.55% (425,308) | 12.14% (115,913) | 1.19% (11,343) |
+
+PROJECT.md's 81.6% is the **non-family** share before the supplement, not the share over all of `full` (44.6%); the three are
+reported separately. The family share is the 2.0% of the planning notes. `results/data/date_supplement_disagreements.csv` lists
+every id whose fetched date differs from the v1 date.
 
 ## The raw fetch is out of band
 
