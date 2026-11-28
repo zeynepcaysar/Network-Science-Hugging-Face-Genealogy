@@ -55,6 +55,17 @@ Results are reported on all three versions (`full`, `no_swarm`, `quant_collapsed
 attributes are listed at the top of `load.py`. The CSVs are read with `dtype=str,
 keep_default_na=False`, since some model ids (`None`, `NA`) would otherwise become missing values.
 
+Upload dates that v1 lacks (about 45,000 parents without metadata) can be added from a one-time Hub fetch that was frozen
+with an md5 check. This is opt-in: `load()`, `load_tables()` and `load_net()` never change, and the helper only fills dates v1
+does not have, never replaces one. See [`data_supplement/README.md`](data_supplement/README.md).
+
+```python
+from load import load_net, pool_entry, supplement_sec
+
+net = load_net("full")
+entry, delayed = pool_entry(net, node_sec=supplement_sec(net))   # placeholder="date" for the sensitivity run
+```
+
 The first load of each version (with or without aliases) writes a parquet cache to `data/.cache/` (about
 44 MB each, up to about 220 MB; git-ignored through `data/*`). Later loads take well under a second. The cache
 rebuilds itself when `MANIFEST.txt` changes or a file is damaged; delete the folder to reset it, or set
@@ -113,6 +124,7 @@ of a 1,000,000-node net takes about 3 s, so build the graph only for small trees
 | `data_pipeline/` | Builds the network: snapshot, roots, renames, file lists, cleaning (`analyse.py`) |
 | `checks/` | Quality checks: edge check, collapsed network, bulk uploaders, live counts |
 | `load.py` | Shared loader for the frozen data |
+| `data_supplement/` | Upload-date supplement for v1 nodes without a date (one-time Hub fetch, frozen with md5) and the fetch script |
 | `rq1_structure/` ... `rq4_robustness/` | One folder per research question; results in `results/rqX/` |
 | `results/data/` | Outputs of the data pipeline and the checks |
 | `data/` | Data files (not on GitHub) |

@@ -7,9 +7,11 @@ Run from the repo root after activating the venv (`source .venv/bin/activate` on
     python -m pytest                          # everything; `data` tests skip if data/ is empty
     python -m pytest -m "not data and not slow"   # without the real data and the long runs
 
-The conftest writes nothing.
+The conftest writes nothing. Test modules named in NO_NETWORK_MODULES (the Phase 4 outside-measure tests) run with every
+socket connect blocked, so no test can reach the Hugging Face Hub; the `no_network` fixture does the same on request.
 """
 import hashlib
+import socket
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,28 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "data_mini"
 REQUIRED = ("nodes.csv", "edges.csv", "edges_quant_collapsed.csv", "edges_aliases.csv")
+NO_NETWORK_MODULES = ("test_outside_", "test_fetch_outside", "test_date_supplement", "test_supplement_sec", "test_size_",
+                      "test_no_hub_calls")  # test file name prefixes that run with the network blocked (SC4)
+
+
+def _block_network(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise RuntimeError("network access blocked in this test")
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+
+
+@pytest.fixture
+def no_network(monkeypatch):
+    """Every socket connect raises RuntimeError("network access blocked in this test") for the duration of the test."""
+    _block_network(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _network_guard(request, monkeypatch):
+    if request.path.name.startswith(NO_NETWORK_MODULES):
+        _block_network(monkeypatch)
 
 
 @pytest.fixture
