@@ -353,9 +353,12 @@ def test_sanity_tables(world):
     results = world.results / "rq2"
     check = read_csv(results / "outside_size_regex_check_full.csv")
     assert check["subset"].tolist() == ["all", "non_quant", "quant"]
-    assert (check["n_both"] == "0").all() and (check["share_within_20"] == "").all()  # no regex tier yet: n_both is 0, shares empty
+    by_subset = check.set_index("subset")
+    assert by_subset["n_both"].tolist() == ["5", "4", "1"]  # rows with a name size and an own total: four base models, one quantised copy
+    assert float(by_subset.loc["non_quant", "share_within_20"]) == 1.0 and float(by_subset.loc["quant", "share_within_20"]) == 0.0
     worst = read_csv(results / "outside_size_regex_worst_full.csv")
-    assert worst.columns.tolist() == ["id", "regex_params", "own_params_safetensors", "ratio"] and worst.empty
+    assert worst.columns.tolist() == ["id", "regex_params", "own_params_safetensors", "ratio"] and len(worst) == 5
+    assert worst["id"].tolist()[0] == "quant-org/Qwen2.5-7B-Q4"  # 7B in the name, 1.1B own total: the largest disagreement first
     children = read_csv(results / "outside_children_check_full.csv")
     assert children.columns.tolist() == ["id", "out_degree_full", "children_model_count", "ratio"]
     assert children["id"].tolist()[0] == "meta-llama/Llama-3.1-8B" and children["out_degree_full"].tolist()[0] == "8"
